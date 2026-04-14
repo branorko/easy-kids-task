@@ -1,0 +1,13 @@
+{
+  "domain": "ulohy",
+  "name": "Úlohy pre domácnosť",
+  "version": "1.0.0",
+  "documentation": "https://github.com/branorko/easy-kids-task",
+  "issue_tracker": "https://github.com/branorko/easy-kids-task/issues",
+  "codeowners": ["@branorko"],
+  "requirements": [],
+  "dependencies": [],
+  "after_dependencies": ["frontend"],
+  "iot_class": "local_push",
+  "config_flow": false
+}
