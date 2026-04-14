@@ -15,14 +15,14 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "ulohy"
 STORAGE_KEY = "ulohy.data"
 STORAGE_VERSION = 1
+LOVELACE_RESOURCE_URL = "/ulohy_static/ulohy-card.js"
+LOVELACE_RESOURCE_VERSION = 1
 
 DEFAULT_DATA = {
     "persons": [],
     "tasks": [],
     "adminPin": None,
-    "settings": {
-        "showChecked": False
-    }
+    "settings": {"showChecked": False}
 }
 
 
@@ -31,7 +31,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     # --- Perzistentné úložisko ---
     store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-
     data = await store.async_load()
     if data is None:
         data = DEFAULT_DATA.copy()
@@ -42,25 +41,76 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                      len(data.get("persons", [])),
                      len(data.get("tasks", [])))
 
-    hass.data[DOMAIN] = {
-        "store": store,
-        "data": data,
-    }
+    hass.data[DOMAIN] = {"store": store, "data": data}
 
     # --- Registrácia HTTP API ---
     hass.http.register_view(UlohyDataView(hass))
 
-    # --- Registrácia frontendu (JS karta) ---
+    # --- Registrácia statického JS súboru ---
     js_path = os.path.join(os.path.dirname(__file__), "www", "ulohy-card.js")
     if os.path.isfile(js_path):
-        url = f"/ulohy_static/ulohy-card.js"
-        hass.http.register_static_path(url, js_path, cache_headers=False)
+        url = LOVELACE_RESOURCE_URL
+        try:
+            from homeassistant.components.http import StaticPathConfig
+            await hass.http.async_register_static_paths([
+                StaticPathConfig(url, js_path, cache_headers=False)
+            ])
+        except (ImportError, AttributeError):
+            hass.http.register_static_path(url, js_path, cache_headers=False)
         add_extra_js_url(hass, url)
         _LOGGER.info("[ulohy] Frontend karta registrovaná: %s", url)
     else:
         _LOGGER.warning("[ulohy] ulohy-card.js nenájdená v %s", js_path)
 
+    # --- Auto-registrácia Lovelace resource ---
+    hass.async_create_task(_async_register_lovelace_resource(hass))
+
     return True
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Automaticky zaregistruje JS kartu v Lovelace resources."""
+    try:
+        lovelace = hass.data.get("lovelace")
+        if lovelace is None:
+            _LOGGER.debug("[ulohy] Lovelace nie je dostupné, preskakujem registráciu resources")
+            return
+
+        resource_url = f"{LOVELACE_RESOURCE_URL}?v={LOVELACE_RESOURCE_VERSION}"
+
+        # Použijeme HA storage pre lovelace resources
+        resources_store = Store(hass, 1, "lovelace_resources")
+        resources_data = await resources_store.async_load() or {"items": []}
+        items = resources_data.get("items", [])
+
+        # Skontroluj či už existuje náš resource (s akoukoľvek verziou)
+        existing = None
+        for item in items:
+            if LOVELACE_RESOURCE_URL in item.get("url", ""):
+                existing = item
+                break
+
+        if existing is None:
+            # Pridaj nový resource
+            new_id = max((item.get("id", 0) for item in items), default=0) + 1
+            items.append({
+                "id": new_id,
+                "type": "module",
+                "url": resource_url
+            })
+            resources_data["items"] = items
+            await resources_store.async_save(resources_data)
+            _LOGGER.info("[ulohy] Lovelace resource pridaný: %s", resource_url)
+        elif existing.get("url") != resource_url:
+            # Aktualizuj verziu
+            existing["url"] = resource_url
+            await resources_store.async_save(resources_data)
+            _LOGGER.info("[ulohy] Lovelace resource aktualizovaný: %s", resource_url)
+        else:
+            _LOGGER.debug("[ulohy] Lovelace resource už existuje: %s", resource_url)
+
+    except Exception as e:
+        _LOGGER.warning("[ulohy] Nepodarilo sa zaregistrovať Lovelace resource: %s", e)
 
 
 class UlohyDataView(HomeAssistantView):
@@ -118,3 +168,14 @@ class UlohyDataView(HomeAssistantView):
             text=json.dumps({"ok": True}),
             content_type="application/json",
         )
+
+
+async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
+    """Nastavenie cez config entry (config_flow)."""
+    return await async_setup(hass, {})
+
+
+async def async_unload_entry(hass: HomeAssistant, entry) -> bool:
+    """Odinštalovanie integrácie."""
+    hass.data.pop(DOMAIN, None)
+    return True

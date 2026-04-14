@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Úlohy pre domácnosť",
+        "description": "Kliknite na Odoslať pre inštaláciu integrácie. Žiadne ďalšie nastavenia nie sú potrebné."
+      }
+    },
+    "abort": {
+      "already_configured": "Integrácia je už nainštalovaná."
+    }
+  }
+}
