@@ -1,1346 +1,859 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť
- * Lovelace custom card pre Home Assistant
- *
- * Dáta ukladané cez /api/ulohy/data (Python backend)
- * → prežije reštart, záloha HA ho zahŕňa, zdieľané pre všetkých používateľov
- *
- * Inštalácia cez HACS – všetko sa nastaví automaticky.
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.0
+ * Každá osoba má vlastnú farebnú kartu.
+ * Dáta ukladané cez /api/ulohy/data (Python backend, .storage)
  */
 
-// ─── Pomocné funkcie ────────────────────────────────────────────────────────
+// ─── Konštanty ───────────────────────────────────────────────────────────────
+const POLL_MS = 15000;
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
+const PALETTE = [
+  { bg: '#E6F1FB', border: '#378ADD', text: '#0C447C' },
+  { bg: '#EAF3DE', border: '#639922', text: '#27500A' },
+  { bg: '#FBEAF0', border: '#D4537E', text: '#72243E' },
+  { bg: '#FAEEDA', border: '#BA7517', text: '#633806' },
+  { bg: '#EEEDFE', border: '#7F77DD', text: '#3C3489' },
+  { bg: '#FAECE7', border: '#D85A30', text: '#712B13' },
+  { bg: '#E1F5EE', border: '#1D9E75', text: '#085041' },
+  { bg: '#FCEBEB', border: '#E24B4A', text: '#791F1F' },
+];
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
+const ROLES = ['Dieťa', 'Rodič', 'Člen'];
 
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T12:00:00');
+// ─── Pomocné ─────────────────────────────────────────────────────────────────
+const uid  = () => Math.random().toString(36).slice(2, 10);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+function addDays(iso, n) {
+  const d = new Date(iso + 'T12:00:00');
   d.setDate(d.getDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
-function fmtDate(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  const days = ['Ne', 'Po', 'Ut', 'St', 'Št', 'Pi', 'So'];
-  const months = ['jan', 'feb', 'mar', 'apr', 'máj', 'jún',
-                  'júl', 'aug', 'sep', 'okt', 'nov', 'dec'];
-  return `${days[d.getDay()]} ${d.getDate()}. ${months[d.getMonth()]}`;
+function fmtDay(iso) {
+  const d   = new Date(iso + 'T12:00:00');
+  const DAY = ['Ne','Po','Ut','St','Št','Pi','So'];
+  const MON = ['jan','feb','mar','apr','máj','jún','júl','aug','sep','okt','nov','dec'];
+  const t = todayISO();
+  const prefix = iso === t ? 'Dnes, ' : iso === addDays(t,-1) ? 'Včera, ' : iso === addDays(t,1) ? 'Zajtra, ' : '';
+  return `${prefix}${DAY[d.getDay()]} ${d.getDate()}. ${MON[d.getMonth()]}`;
 }
 
-function isOverdue(dateStr) {
-  return dateStr < today();
-}
-
-// Vráti zoznam dátumov pre opakujúcu sa úlohu v rozsahu [from, to]
-function occurrencesInRange(task, from, to) {
-  const dates = [];
+function occurrencesOnDate(task, iso) {
   if (!task.repeat || task.repeat === 'none') {
-    if (task.date >= from && task.date <= to) dates.push(task.date);
-    return dates;
+    return task.date === iso;
   }
-  let cur = task.date;
-  while (cur <= to) {
-    if (cur >= from) dates.push(cur);
-    if (task.repeat === 'daily') { cur = addDays(cur, 1); }
-    else if (task.repeat === 'weekly') {
-      // opakuje sa v konkrétne dni
-      const daysOfWeek = task.repeatDays || [];
-      if (daysOfWeek.length === 0) { cur = addDays(cur, 7); }
-      else {
-        // nájdi nasledujúci výskyt
-        let next = addDays(cur, 1);
-        let safety = 0;
-        while (safety++ < 14) {
-          const dow = new Date(next + 'T12:00:00').getDay();
-          // HA štandard: 0=Ne,1=Po,...,6=So
-          if (daysOfWeek.includes(dow)) break;
-          next = addDays(next, 1);
-        }
-        cur = next;
-      }
-    }
-    else if (task.repeat === 'monthly') {
-      const d = new Date(cur + 'T12:00:00');
-      d.setMonth(d.getMonth() + 1);
-      cur = d.toISOString().slice(0, 10);
-    }
-    else if (task.repeat === 'yearly') {
-      const d = new Date(cur + 'T12:00:00');
-      d.setFullYear(d.getFullYear() + 1);
-      cur = d.toISOString().slice(0, 10);
-    }
-    else break;
+  // task.date je štart; iso musí byť >= štart
+  if (iso < task.date) return false;
+  if (task.repeat === 'daily') return true;
+  if (task.repeat === 'weekly') {
+    const dow = new Date(iso + 'T12:00:00').getDay();
+    return (task.repeatDays || []).includes(dow);
   }
-  return dates;
+  if (task.repeat === 'monthly') {
+    return new Date(iso + 'T12:00:00').getDate() === new Date(task.date + 'T12:00:00').getDate();
+  }
+  if (task.repeat === 'yearly') {
+    const a = new Date(iso + 'T12:00:00'), b = new Date(task.date + 'T12:00:00');
+    return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
+  }
+  return false;
 }
 
-// Vráti stav konkrétnej inštancie úlohy k danému dátumu
-function getOccState(task, dateStr) {
-  const key = `${task.id}_${dateStr}`;
-  return (task.occurrences || {})[key] || 'todo';
+function getOcc(task, iso)      { return (task.occurrences || {})[`${task.id}_${iso}`] || 'todo'; }
+function setOcc(task, iso, st)  { if (!task.occurrences) task.occurrences = {}; task.occurrences[`${task.id}_${iso}`] = st; }
+
+const REPEAT_LABEL = { none:'Jednorazová', daily:'Denne', weekly:'Týždenne', monthly:'Mesačne', yearly:'Ročne' };
+const DOW_LABEL    = ['Ne','Po','Ut','St','Št','Pi','So'];
+
+// ─── CSS ─────────────────────────────────────────────────────────────────────
+const CSS = `
+:host {
+  display: block;
+  font-family: var(--primary-font-family, system-ui, sans-serif);
+  --r: 12px; --rs: 8px;
+  --bg:  var(--card-background-color, #fff);
+  --sf:  var(--secondary-background-color, #f5f5f5);
+  --bd:  var(--divider-color, rgba(0,0,0,.12));
+  --tx:  var(--primary-text-color, #212121);
+  --mu:  var(--secondary-text-color, #757575);
+  --ac:  var(--primary-color, #1976d2);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Obal karty ── */
+.wrap { background: var(--bg); border-radius: var(--r); overflow: hidden; }
+
+/* ── Hlavička ── */
+.hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 0;
+}
+.hdr-title { font-size: 16px; font-weight: 600; color: var(--tx); }
+.hdr-acts  { display: flex; gap: 6px; }
+.icon-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--mu); padding: 6px; border-radius: var(--rs);
+  font-size: 16px; line-height: 1; transition: background .15s, color .15s;
+}
+.icon-btn:hover { background: var(--sf); color: var(--tx); }
+.icon-btn.on { color: var(--ac); }
+
+/* ── Saving bar ── */
+.sbar { font-size: 11px; color: var(--mu); padding: 2px 16px; min-height: 18px; }
+
+/* ── Navigácia dátumom ── */
+.dnav {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 16px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+.nav-btn {
+  background: none; border: 1px solid var(--bd); border-radius: var(--rs);
+  width: 28px; height: 28px; cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--tx); transition: background .15s;
+}
+.nav-btn:hover { background: var(--sf); }
+.date-lbl { flex: 1; font-size: 14px; font-weight: 500; color: var(--tx); }
+.today-chip {
+  font-size: 11px; padding: 3px 8px; border: 1px solid var(--bd);
+  border-radius: 20px; background: none; cursor: pointer; color: var(--mu);
+  font-family: inherit; transition: background .15s;
+}
+.today-chip:hover { background: var(--sf); }
+
+/* ── Osobné karty – grid ── */
+.persons-grid {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 16px 16px;
 }
 
-function setOccState(task, dateStr, state) {
-  if (!task.occurrences) task.occurrences = {};
-  const key = `${task.id}_${dateStr}`;
-  task.occurrences[key] = state;
+/* ── Jedna osobná karta ── */
+.pcard {
+  border-radius: var(--rs);
+  border: 1.5px solid var(--bd);
+  overflow: hidden;
+  transition: box-shadow .15s;
+}
+.pcard:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+
+.pcard-hdr {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1.5px solid var(--bd);
+}
+.pcard-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; flex-shrink: 0;
+  overflow: hidden; border: 2px solid rgba(0,0,0,.08);
+}
+.pcard-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.pcard-info { flex: 1; min-width: 0; }
+.pcard-name { font-size: 14px; font-weight: 600; color: var(--tx); }
+.pcard-meta { font-size: 11px; color: var(--mu); margin-top: 1px; }
+.pcard-prog {
+  font-size: 12px; font-weight: 600; padding: 3px 8px;
+  border-radius: 20px; white-space: nowrap; flex-shrink: 0;
 }
 
-// ─── CSS ────────────────────────────────────────────────────────────────────
+/* ── Zoznam úloh v karte (sklad štýl) ── */
+.task-list { padding: 4px 0; }
 
-const STYLES = `
-  :host {
-    display: block;
-    font-family: var(--primary-font-family, system-ui, sans-serif);
-    --u-radius: 12px;
-    --u-radius-sm: 8px;
-    --u-bg: var(--card-background-color, #fff);
-    --u-surface: var(--secondary-background-color, #f5f5f5);
-    --u-border: var(--divider-color, rgba(0,0,0,0.12));
-    --u-text: var(--primary-text-color, #212121);
-    --u-muted: var(--secondary-text-color, #757575);
-    --u-accent: var(--primary-color, #1976d2);
-    /* stavové farby rovnaké ako sklad */
-    --u-todo-bg: #FAEEDA;    --u-todo-text: #633806;
-    --u-done-bg: #EAF3DE;    --u-done-text: #27500A;
-    --u-checked-bg: #E1F5EE; --u-checked-text: #085041;
-    --u-overdue-bg: #FCEBEB; --u-overdue-text: #791F1F;
-  }
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+.task-row {
+  border-bottom: 1px solid var(--bd);
+  transition: background .1s;
+}
+.task-row:last-child { border-bottom: none; }
 
-  .card {
-    background: var(--u-bg);
-    border-radius: var(--u-radius);
-    overflow: hidden;
-  }
+.task-main {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer; user-select: none;
+}
+.task-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.dot-todo    { background: #EF9F27; }
+.dot-done    { background: #639922; }
+.dot-checked { background: #1D9E75; }
+.dot-overdue { background: #E24B4A; }
 
-  /* ── Hlavička ── */
-  .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 16px 0;
-  }
-  .card-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--u-text);
-    letter-spacing: -0.01em;
-  }
-  .header-actions {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-  .icon-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--u-muted);
-    padding: 6px;
-    border-radius: var(--u-radius-sm);
-    font-size: 16px;
-    line-height: 1;
-    transition: background 0.15s, color 0.15s;
-  }
-  .icon-btn:hover { background: var(--u-surface); color: var(--u-text); }
-  .icon-btn.active { color: var(--u-accent); }
+.task-name {
+  flex: 1; font-size: 13px; font-weight: 500; color: var(--tx);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.task-rtag {
+  font-size: 10px; padding: 2px 5px; border-radius: 8px;
+  background: var(--sf); color: var(--mu);
+  border: 1px solid var(--bd); white-space: nowrap; flex-shrink: 0;
+}
+.task-badge {
+  font-size: 11px; font-weight: 600; padding: 3px 8px;
+  border-radius: 10px; white-space: nowrap; flex-shrink: 0;
+}
+.badge-todo    { background: #FAEEDA; color: #633806; }
+.badge-done    { background: #EAF3DE; color: #27500A; }
+.badge-checked { background: #E1F5EE; color: #085041; }
+.badge-overdue { background: #FCEBEB; color: #791F1F; }
 
-  /* ── Tabs ── */
-  .tabs {
-    display: flex;
-    gap: 0;
-    padding: 12px 16px 0;
-    border-bottom: 1px solid var(--u-border);
-  }
-  .tab {
-    padding: 8px 14px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    border: none;
-    background: none;
-    color: var(--u-muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    font-family: inherit;
-    border-radius: var(--u-radius-sm) var(--u-radius-sm) 0 0;
-    transition: color 0.15s;
-  }
-  .tab:hover { color: var(--u-text); }
-  .tab.active { color: var(--u-text); border-bottom-color: var(--u-accent); }
+.task-chev { font-size: 11px; color: var(--mu); transition: transform .2s; flex-shrink: 0; }
+.task-row.open .task-chev { transform: rotate(90deg); }
 
-  /* ── Obsah ── */
-  .section { display: none; padding: 12px 16px 16px; }
-  .section.active { display: block; }
+/* ── Detail úlohy ── */
+.task-detail {
+  display: none; padding: 8px 12px 10px;
+  background: var(--sf); border-top: 1px solid var(--bd);
+  flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.task-row.open .task-detail { display: flex; }
+.task-note { font-size: 12px; color: var(--mu); flex-basis: 100%; margin-bottom: 2px; }
 
-  /* ── Navigácia dátumom ── */
-  .date-nav {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-  }
-  .nav-btn {
-    background: none;
-    border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm);
-    width: 30px; height: 30px;
-    cursor: pointer;
-    font-size: 14px;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--u-text);
-    transition: background 0.15s;
-  }
-  .nav-btn:hover { background: var(--u-surface); }
-  .date-label {
-    flex: 1;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--u-text);
-  }
-  .today-chip {
-    font-size: 11px;
-    padding: 3px 8px;
-    border: 1px solid var(--u-border);
-    border-radius: 20px;
-    background: none;
-    cursor: pointer;
-    color: var(--u-muted);
-    font-family: inherit;
-    transition: background 0.15s;
-  }
-  .today-chip:hover { background: var(--u-surface); }
+.act-btn {
+  font-size: 12px; font-weight: 600; padding: 6px 11px;
+  border-radius: var(--rs); border: none; cursor: pointer;
+  font-family: inherit; transition: opacity .15s;
+}
+.act-btn:hover { opacity: .85; }
+.btn-done    { background: #EAF3DE; color: #27500A; }
+.btn-checked { background: #E1F5EE; color: #085041; }
+.btn-revert  { background: var(--sf); color: var(--mu); border: 1px solid var(--bd); }
+.admin-acts  { margin-left: auto; display: flex; gap: 4px; }
+.edit-ic, .del-ic {
+  background: none; border: none; cursor: pointer;
+  font-size: 14px; color: var(--mu); padding: 4px 6px;
+  border-radius: 6px; transition: background .15s, color .15s;
+}
+.edit-ic:hover { background: #FAEEDA; color: #633806; }
+.del-ic:hover  { background: #FCEBEB; color: #791F1F; }
 
-  /* ── Skupina úloh ── */
-  .task-group-label {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--u-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin: 12px 0 6px;
-  }
-  .task-group-label:first-child { margin-top: 0; }
+/* ── Empty ── */
+.empty { text-align: center; padding: 24px 12px; color: var(--mu); font-size: 13px; }
+.empty-ico { font-size: 26px; margin-bottom: 6px; }
 
-  /* ── Úloha (sklad štýl) ── */
-  .task-row {
-    border-radius: var(--u-radius-sm);
-    margin-bottom: 4px;
-    overflow: hidden;
-    border: 1px solid var(--u-border);
-    transition: box-shadow 0.15s;
-  }
-  .task-row:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+/* ── Add button ── */
+.add-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; padding: 8px; margin-top: 4px;
+  border: 1px dashed var(--bd); border-radius: var(--rs);
+  background: none; cursor: pointer; font-size: 13px; color: var(--mu);
+  font-family: inherit; transition: border-color .15s, color .15s;
+}
+.add-btn:hover { border-color: var(--ac); color: var(--ac); }
 
-  .task-main {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 10px;
-    cursor: pointer;
-    user-select: none;
-  }
+/* ── Modal ── */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999; opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+.overlay.open { opacity: 1; pointer-events: all; }
+.modal {
+  background: var(--bg); border-radius: var(--r); padding: 20px;
+  width: min(420px, 93vw); max-height: 88vh; overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  transform: translateY(12px); transition: transform .2s;
+}
+.overlay.open .modal { transform: translateY(0); }
+.modal-title { font-size: 15px; font-weight: 600; color: var(--tx); margin-bottom: 14px; }
+.fg { margin-bottom: 11px; }
+.fl { display: block; font-size: 12px; font-weight: 500; color: var(--mu); margin-bottom: 4px; }
+.fi, .fsel, .fta {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--bd);
+  border-radius: var(--rs); background: var(--bg); color: var(--tx);
+  font-size: 13px; font-family: inherit; outline: none; transition: border-color .15s;
+}
+.fi:focus, .fsel:focus, .fta:focus { border-color: var(--ac); }
+.fta { min-height: 54px; resize: vertical; }
+.wdgrid { display: flex; gap: 5px; flex-wrap: wrap; }
+.wdbtn {
+  width: 34px; height: 34px; border: 1px solid var(--bd); border-radius: 50%;
+  background: none; cursor: pointer; font-size: 11px; font-weight: 500;
+  color: var(--mu); font-family: inherit; transition: background .15s, color .15s, border-color .15s;
+}
+.wdbtn.sel { background: var(--ac); color: #fff; border-color: var(--ac); }
+.mfooter {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--bd);
+}
+.btn-cancel {
+  padding: 7px 14px; border: 1px solid var(--bd); border-radius: var(--rs);
+  background: none; cursor: pointer; font-size: 13px; color: var(--mu); font-family: inherit;
+}
+.btn-save {
+  padding: 7px 14px; border: none; border-radius: var(--rs);
+  background: var(--ac); color: #fff; cursor: pointer;
+  font-size: 13px; font-weight: 500; font-family: inherit;
+}
+.btn-save:hover { opacity: .9; }
+.btn-del {
+  padding: 7px 14px; border: none; border-radius: var(--rs);
+  background: #FCEBEB; color: #791F1F; cursor: pointer;
+  font-size: 13px; font-family: inherit; margin-right: auto;
+}
 
-  .task-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .task-dot.todo    { background: #EF9F27; }
-  .task-dot.done    { background: #639922; }
-  .task-dot.checked { background: #1D9E75; }
-  .task-dot.overdue { background: #E24B4A; }
+/* ── PIN ── */
+.pin-wrap { text-align: center; padding: 24px 16px; }
+.pin-sub  { font-size: 13px; color: var(--mu); margin-bottom: 8px; }
+.pin-dots { display: flex; gap: 12px; justify-content: center; margin: 10px 0; }
+.pin-dot  {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--bd); background: none; transition: background .15s;
+}
+.pin-dot.f { background: var(--ac); border-color: var(--ac); }
+.pin-grid  { display: grid; grid-template-columns: repeat(3,62px); gap: 7px; justify-content: center; margin-top: 8px; }
+.pin-key   {
+  height: 46px; border: 1px solid var(--bd); border-radius: var(--rs);
+  background: var(--sf); cursor: pointer; font-size: 17px; font-weight: 500;
+  color: var(--tx); font-family: inherit; transition: background .15s;
+}
+.pin-key:hover { background: var(--bd); }
+.pin-err { font-size: 12px; color: #E24B4A; min-height: 16px; margin-top: 4px; }
 
-  .task-avatar {
-    width: 22px; height: 22px;
-    border-radius: 50%;
-    background: var(--u-surface);
-    border: 1px solid var(--u-border);
-    flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--u-muted);
-    overflow: hidden;
-  }
-  .task-avatar img { width: 100%; height: 100%; object-fit: cover; }
-
-  .task-name {
-    flex: 1;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--u-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .task-repeat-tag {
-    font-size: 10px;
-    padding: 2px 6px;
-    border-radius: 10px;
-    background: var(--u-surface);
-    color: var(--u-muted);
-    border: 1px solid var(--u-border);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .task-badge {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 3px 8px;
-    border-radius: 10px;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  .task-badge.todo    { background: var(--u-todo-bg);    color: var(--u-todo-text); }
-  .task-badge.done    { background: var(--u-done-bg);    color: var(--u-done-text); }
-  .task-badge.checked { background: var(--u-checked-bg); color: var(--u-checked-text); }
-  .task-badge.overdue { background: var(--u-overdue-bg); color: var(--u-overdue-text); }
-
-  .task-chevron {
-    font-size: 12px;
-    color: var(--u-muted);
-    transition: transform 0.2s;
-    flex-shrink: 0;
-  }
-  .task-row.open .task-chevron { transform: rotate(90deg); }
-
-  /* ── Detail úlohy ── */
-  .task-detail {
-    display: none;
-    padding: 8px 10px 10px;
-    border-top: 1px solid var(--u-border);
-    background: var(--u-surface);
-    gap: 8px;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-  .task-row.open .task-detail { display: flex; }
-
-  .action-btn {
-    font-size: 12px;
-    font-weight: 600;
-    padding: 6px 12px;
-    border-radius: var(--u-radius-sm);
-    border: none;
-    cursor: pointer;
-    font-family: inherit;
-    transition: opacity 0.15s;
-  }
-  .action-btn:hover { opacity: 0.85; }
-  .action-btn.done-btn    { background: var(--u-done-bg);    color: var(--u-done-text); }
-  .action-btn.checked-btn { background: var(--u-checked-bg); color: var(--u-checked-text); }
-  .action-btn.revert-btn  { background: var(--u-surface); color: var(--u-muted);
-                             border: 1px solid var(--u-border); }
-
-  .admin-acts { margin-left: auto; display: flex; gap: 6px; }
-  .edit-icon, .del-icon {
-    background: none; border: none; cursor: pointer;
-    font-size: 14px; color: var(--u-muted); padding: 4px 6px;
-    border-radius: 6px; font-family: inherit;
-    transition: background 0.15s, color 0.15s;
-  }
-  .edit-icon:hover { background: var(--u-todo-bg); color: var(--u-todo-text); }
-  .del-icon:hover  { background: var(--u-overdue-bg); color: var(--u-overdue-text); }
-
-  /* ── Osobné karty ── */
-  .persons-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 10px;
-  }
-  .person-card {
-    border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm);
-    overflow: hidden;
-  }
-  .person-card-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
-    background: var(--u-surface);
-    border-bottom: 1px solid var(--u-border);
-  }
-  .person-avatar-lg {
-    width: 32px; height: 32px;
-    border-radius: 50%;
-    background: var(--u-border);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; font-weight: 700;
-    color: var(--u-muted);
-    overflow: hidden;
-    flex-shrink: 0;
-  }
-  .person-avatar-lg img { width: 100%; height: 100%; object-fit: cover; }
-  .person-name-lg { font-size: 14px; font-weight: 600; color: var(--u-text); }
-  .person-stats { font-size: 11px; color: var(--u-muted); }
-  .person-tasks { padding: 6px 0; }
-  .person-task-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--u-border);
-    cursor: pointer;
-    transition: background 0.1s;
-  }
-  .person-task-row:last-child { border-bottom: none; }
-  .person-task-row:hover { background: var(--u-surface); }
-  .person-task-name { flex: 1; font-size: 13px; color: var(--u-text); }
-  .person-task-date { font-size: 11px; color: var(--u-muted); }
-
-  /* ── Empty state ── */
-  .empty {
-    text-align: center;
-    padding: 32px 16px;
-    color: var(--u-muted);
-    font-size: 13px;
-  }
-  .empty-icon { font-size: 28px; margin-bottom: 8px; }
-
-  /* ── Saving indikátor ── */
-  .saving-bar {
-    font-size: 11px;
-    color: var(--u-muted);
-    padding: 4px 16px;
-    min-height: 20px;
-    transition: opacity 0.3s;
-  }
-
-  /* ── Modal ── */
-  .modal-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.45);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 9999;
-    opacity: 0; pointer-events: none;
-    transition: opacity 0.2s;
-  }
-  .modal-overlay.open { opacity: 1; pointer-events: all; }
-  .modal {
-    background: var(--u-bg);
-    border-radius: var(--u-radius);
-    padding: 20px;
-    width: min(420px, 92vw);
-    max-height: 88vh;
-    overflow-y: auto;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-    transform: translateY(12px);
-    transition: transform 0.2s;
-  }
-  .modal-overlay.open .modal { transform: translateY(0); }
-  .modal-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--u-text); }
-  .form-group { margin-bottom: 12px; }
-  .form-label {
-    display: block;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--u-muted);
-    margin-bottom: 5px;
-  }
-  .form-input, .form-select, .form-textarea {
-    width: 100%;
-    padding: 8px 10px;
-    border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm);
-    background: var(--u-bg);
-    color: var(--u-text);
-    font-size: 13px;
-    font-family: inherit;
-    outline: none;
-    transition: border-color 0.15s;
-  }
-  .form-input:focus, .form-select:focus, .form-textarea:focus {
-    border-color: var(--u-accent);
-  }
-  .form-textarea { min-height: 60px; resize: vertical; }
-  .weekday-grid {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .weekday-btn {
-    width: 36px; height: 36px;
-    border: 1px solid var(--u-border);
-    border-radius: 50%;
-    background: none;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--u-muted);
-    font-family: inherit;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
-  }
-  .weekday-btn.sel {
-    background: var(--u-accent);
-    color: #fff;
-    border-color: var(--u-accent);
-  }
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid var(--u-border);
-  }
-  .btn-cancel {
-    padding: 8px 16px;
-    border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm);
-    background: none;
-    cursor: pointer;
-    font-size: 13px;
-    color: var(--u-muted);
-    font-family: inherit;
-  }
-  .btn-save {
-    padding: 8px 16px;
-    border: none;
-    border-radius: var(--u-radius-sm);
-    background: var(--u-accent);
-    color: #fff;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    font-family: inherit;
-  }
-  .btn-save:hover { opacity: 0.9; }
-  .btn-danger {
-    padding: 8px 16px;
-    border: none;
-    border-radius: var(--u-radius-sm);
-    background: var(--u-overdue-bg);
-    color: var(--u-overdue-text);
-    cursor: pointer;
-    font-size: 13px;
-    font-family: inherit;
-    margin-right: auto;
-  }
-
-  /* ── PIN ── */
-  .pin-wrap { text-align: center; padding: 8px 0; }
-  .pin-dots { display: flex; gap: 12px; justify-content: center; margin: 12px 0; }
-  .pin-dot {
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    border: 2px solid var(--u-border);
-    background: none;
-    transition: background 0.15s;
-  }
-  .pin-dot.filled { background: var(--u-accent); border-color: var(--u-accent); }
-  .pin-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 64px);
-    gap: 8px;
-    justify-content: center;
-    margin-top: 8px;
-  }
-  .pin-key {
-    height: 48px;
-    border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm);
-    background: var(--u-surface);
-    cursor: pointer;
-    font-size: 18px;
-    font-weight: 500;
-    color: var(--u-text);
-    font-family: inherit;
-    transition: background 0.15s;
-  }
-  .pin-key:hover { background: var(--u-border); }
-  .pin-key.del { font-size: 14px; }
-  .pin-err { font-size: 12px; color: var(--u-overdue-text); min-height: 18px; margin-top: 4px; }
-
-  /* ── Admin sekcia ── */
-  .admin-section { padding: 0; }
-  .admin-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--u-border);
-  }
-  .admin-row:last-child { border-bottom: none; }
-  .admin-row-label { font-size: 13px; color: var(--u-text); }
-  .admin-row-sub { font-size: 11px; color: var(--u-muted); }
-  .add-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 12px;
-    border: 1px dashed var(--u-border);
-    border-radius: var(--u-radius-sm);
-    background: none;
-    cursor: pointer;
-    font-size: 13px;
-    color: var(--u-muted);
-    font-family: inherit;
-    width: 100%;
-    margin-top: 8px;
-    transition: border-color 0.15s, color 0.15s;
-  }
-  .add-btn:hover { border-color: var(--u-accent); color: var(--u-accent); }
-  .person-chip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm);
-    margin-bottom: 6px;
-  }
-  .person-chip-name { flex: 1; font-size: 13px; color: var(--u-text); }
+/* ── Admin obsah ── */
+.adm-wrap { padding: 12px 16px 16px; }
+.adm-section-lbl {
+  font-size: 11px; font-weight: 600; color: var(--mu);
+  text-transform: uppercase; letter-spacing: .06em; margin: 12px 0 8px;
+}
+.adm-section-lbl:first-child { margin-top: 0; }
+.person-chip {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--bd); border-radius: var(--rs); margin-bottom: 6px;
+}
+.person-chip-name { flex: 1; font-size: 13px; color: var(--tx); }
+.person-chip-role { font-size: 11px; color: var(--mu); }
+.adm-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 0; border-bottom: 1px solid var(--bd);
+}
+.adm-row:last-child { border-bottom: none; }
+.adm-row-lbl { font-size: 13px; color: var(--tx); }
+.adm-row-sub { font-size: 11px; color: var(--mu); }
 `;
 
-// ─── Hlavná trieda karty ─────────────────────────────────────────────────────
-
+// ─── Hlavná trieda ────────────────────────────────────────────────────────────
 class UlohyCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._state = null;
-    this._hass = null;
-    this._activeTab = 0;  // 0=Dnes, 1=Osoby, 2=Admin
-    this._viewDate = today();
-    this._adminUnlocked = false;
-    this._pinInput = '';
-    this._pinMode = '';       // 'unlock' | 'setup1' | 'setup2'
-    this._pinSetupFirst = '';
-    this._saving = '';
-    this._loaded = false;
-    this._modalOpen = false;
-    this._editTask = null;    // task objekt pri editácii
-    this._editPerson = null;  // person objekt pri editácii
-    this._weekdaysSel = [];   // vybrané dni pri editácii
+    this._hass        = null;
+    this._state       = null;
+    this._loaded      = false;
+    this._viewDate    = todayISO();
+    this._adminOn     = false;
+    this._pinInput    = '';
+    this._pinMode     = '';
+    this._pinFirst    = '';
+    this._weekSel     = [];
+    this._pollTimer   = null;
+    this._saving      = '';
+    this._showChecked = false;
   }
 
   set hass(h) {
     this._hass = h;
-    if (!this._loaded) {
-      this._loaded = true;
-      this._loadData();
-    }
+    if (!this._loaded) { this._loaded = true; this._load(); }
   }
-
-  setConfig(config) {
-    this._config = config || {};
-  }
-
-  static getConfigElement() { return null; }
+  setConfig(c) { this._config = c || {}; }
   static getStubConfig() { return {}; }
 
-  // ── Storage ──────────────────────────────────────────────────────────────
-
-  async _loadData() {
-    try {
-      const resp = await this._hass.callApi('GET', 'ulohy/data');
-      if (resp && typeof resp === 'object') {
-        this._state = resp;
-      }
-    } catch (e) {
-      console.warn('[ulohy-card] Chyba načítania, používam prázdny stav', e);
-    }
-    if (!this._state) this._state = this._defaultState();
-    this._render();
+  disconnectedCallback() {
+    if (this._pollTimer) clearInterval(this._pollTimer);
   }
 
-  async _saveData() {
+  // ── Storage ─────────────────────────────────────────────────────────────────
+  async _load() {
+    try {
+      const r = await this._hass.callApi('GET', 'ulohy/data');
+      if (r && typeof r === 'object') this._state = r;
+    } catch(e) { console.warn('[ulohy] load error', e); }
+    if (!this._state) this._state = this._empty();
+    this._render();
+    // Auto-sync
+    if (this._pollTimer) clearInterval(this._pollTimer);
+    this._pollTimer = setInterval(() => this._poll(), POLL_MS);
+  }
+
+  async _poll() {
+    try {
+      const r = await this._hass.callApi('GET', 'ulohy/data');
+      if (r && typeof r === 'object') {
+        this._state = r;
+        this._renderPersonsGrid();
+      }
+    } catch(e) {}
+  }
+
+  async _save() {
     this._setSaving('Ukladám…');
     try {
       await this._hass.callApi('POST', 'ulohy/data', this._state);
       this._setSaving('Uložené ✓');
-    } catch (e) {
-      console.error('[ulohy-card] Chyba ukladania', e);
-      this._setSaving('Chyba ukladania!');
-    }
+    } catch(e) { this._setSaving('Chyba!'); }
     setTimeout(() => this._setSaving(''), 2000);
   }
 
-  _setSaving(msg) {
-    this._saving = msg;
-    const bar = this.shadowRoot.querySelector('.saving-bar');
-    if (bar) bar.textContent = msg;
+  _setSaving(m) {
+    this._saving = m;
+    const el = this.shadowRoot.querySelector('.sbar');
+    if (el) el.textContent = m;
   }
 
-  _defaultState() {
-    return {
-      persons: [],
-      tasks: [],
-      adminPin: null,
-      settings: { showChecked: false }
-    };
+  _empty() {
+    return { persons: [], tasks: [], adminPin: null, settings: { showChecked: false } };
   }
 
-  // ── Render ───────────────────────────────────────────────────────────────
-
+  // ── Render – shell ───────────────────────────────────────────────────────────
   _render() {
     const s = this.shadowRoot;
-    const t = this._activeTab;
-
-    if (!s.querySelector('.card')) {
-      // Prvý render – vybudujem celú štruktúru
-      s.innerHTML = `
-        <style>${STYLES}</style>
-        <ha-card class="card">
-          <div class="card-header">
-            <span class="card-title">📋 Úlohy</span>
-            <div class="header-actions">
-              <button class="icon-btn" id="add-task-btn" title="Pridať úlohu">＋</button>
-              <button class="icon-btn ${this._state.settings.showChecked ? 'active' : ''}"
-                      id="toggle-checked-btn" title="Zobraziť skontrolované">✔</button>
+    if (!s.querySelector('.wrap')) {
+      s.innerHTML = `<style>${CSS}</style>
+        <ha-card class="wrap">
+          <div class="hdr">
+            <span class="hdr-title">📋 Úlohy</span>
+            <div class="hdr-acts">
+              <button class="icon-btn" id="btn-add-task" title="Nová úloha">＋</button>
+              <button class="icon-btn${this._showChecked?' on':''}" id="btn-toggle-done" title="Zobraziť skontrolované">✔</button>
+              <button class="icon-btn" id="btn-admin" title="Admin">⚙</button>
             </div>
           </div>
-          <div class="saving-bar">${this._saving}</div>
-          <div class="tabs">
-            <button class="tab ${t === 0 ? 'active' : ''}" data-tab="0">Dnes</button>
-            <button class="tab ${t === 1 ? 'active' : ''}" data-tab="1">Osoby</button>
-            <button class="tab ${t === 2 ? 'active' : ''}" data-tab="2">⚙</button>
+          <div class="sbar"></div>
+          <div class="dnav">
+            <button class="nav-btn" id="prev-day">‹</button>
+            <span class="date-lbl" id="date-lbl"></span>
+            <button class="today-chip" id="go-today" style="display:none">Dnes</button>
+            <button class="nav-btn" id="next-day">›</button>
           </div>
-          <div class="section ${t === 0 ? 'active' : ''}" id="sec-0"></div>
-          <div class="section ${t === 1 ? 'active' : ''}" id="sec-1"></div>
-          <div class="section ${t === 2 ? 'active' : ''}" id="sec-2"></div>
+          <div class="persons-grid" id="pgrid"></div>
         </ha-card>
-        <div class="modal-overlay" id="modal-overlay">
-          <div class="modal" id="modal"></div>
-        </div>
-      `;
+        <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>`;
 
-      // Event listenery
-      s.querySelectorAll('.tab').forEach(btn => {
-        btn.addEventListener('click', () => {
-          this._activeTab = +btn.dataset.tab;
-          this._render();
-        });
+      s.querySelector('#prev-day').addEventListener('click', () => {
+        this._viewDate = addDays(this._viewDate, -1); this._renderPersonsGrid();
       });
-      s.querySelector('#add-task-btn').addEventListener('click', () => {
-        this._openTaskModal(null, null);
+      s.querySelector('#next-day').addEventListener('click', () => {
+        this._viewDate = addDays(this._viewDate, 1); this._renderPersonsGrid();
       });
-      s.querySelector('#toggle-checked-btn').addEventListener('click', () => {
-        this._state.settings.showChecked = !this._state.settings.showChecked;
-        this._saveData();
-        this._render();
+      s.querySelector('#go-today').addEventListener('click', () => {
+        this._viewDate = todayISO(); this._renderPersonsGrid();
       });
-      s.querySelector('#modal-overlay').addEventListener('click', (e) => {
-        if (e.target === s.querySelector('#modal-overlay')) this._closeModal();
+      s.querySelector('#btn-add-task').addEventListener('click', () => this._openTaskModal(null));
+      s.querySelector('#btn-toggle-done').addEventListener('click', () => {
+        this._showChecked = !this._showChecked;
+        s.querySelector('#btn-toggle-done').classList.toggle('on', this._showChecked);
+        this._renderPersonsGrid();
       });
-    } else {
-      // Aktualizácia tabov
-      s.querySelectorAll('.tab').forEach((btn, i) => {
-        btn.classList.toggle('active', i === t);
+      s.querySelector('#btn-admin').addEventListener('click', () => this._openAdminModal());
+      s.querySelector('#overlay').addEventListener('click', e => {
+        if (e.target === s.querySelector('#overlay')) this._closeModal();
       });
-      s.querySelectorAll('.section').forEach((sec, i) => {
-        sec.classList.toggle('active', i === t);
-      });
-      const toggleBtn = s.querySelector('#toggle-checked-btn');
-      if (toggleBtn) toggleBtn.classList.toggle('active', this._state.settings.showChecked);
     }
 
-    // Vyplniť aktívnu sekciu
-    this._renderSection(t);
+    this._renderPersonsGrid();
   }
 
-  _renderSection(idx) {
-    const sec = this.shadowRoot.querySelector(`#sec-${idx}`);
-    if (!sec) return;
-    if (idx === 0) this._renderToday(sec);
-    else if (idx === 1) this._renderPersons(sec);
-    else this._renderAdmin(sec);
-  }
+  // ── Osobné karty ────────────────────────────────────────────────────────────
+  _renderPersonsGrid() {
+    const grid  = this.shadowRoot.querySelector('#pgrid');
+    const dlbl  = this.shadowRoot.querySelector('#date-lbl');
+    const gotoday = this.shadowRoot.querySelector('#go-today');
+    if (!grid) return;
 
-  // ── Sekcia: Dnes ─────────────────────────────────────────────────────────
+    const iso   = this._viewDate;
+    const isToday = iso === todayISO();
+    if (dlbl)   dlbl.textContent  = fmtDay(iso);
+    if (gotoday) gotoday.style.display = isToday ? 'none' : '';
 
-  _renderToday(sec) {
-    const todayStr = today();
-    const isToday = this._viewDate === todayStr;
-
-    // Predom-a-pozadu okno: overdue = všetko pred dnes čo nie je hotové
-    const overdueDate = addDays(todayStr, -30);
-    const futureCap = addDays(todayStr, 365);
-
-    // Všetky výskyty v zobrazovanom dni
-    const dayTasks = this._getTasksForDate(this._viewDate);
-
-    // Overdue – len ak zobrazujeme dnes
-    let overdueTasks = [];
-    if (isToday) {
-      // Hľadám nedokončené výskyty z posledných 30 dní (okrem dnes)
-      for (let i = 29; i >= 1; i--) {
-        const d = addDays(todayStr, -i);
-        const dt = this._getTasksForDate(d);
-        overdueTasks.push(...dt.filter(x => x.st === 'todo').map(x => ({ ...x, overdueDate: d })));
-      }
+    if (!this._state || this._state.persons.length === 0) {
+      grid.innerHTML = `<div class="empty"><div class="empty-ico">👥</div>Zatiaľ žiadne osoby.<br>Pridaj ich cez ⚙ Admin.</div>`;
+      return;
     }
 
-    let html = `
-      <div class="date-nav">
-        <button class="nav-btn" id="prev-day">‹</button>
-        <span class="date-label">${isToday ? 'Dnes' : ''} ${fmtDate(this._viewDate)}</span>
-        ${!isToday ? `<button class="today-chip" id="go-today">Dnes</button>` : ''}
-        <button class="nav-btn" id="next-day">›</button>
-      </div>
-    `;
+    grid.innerHTML = this._state.persons.map((p, pi) => {
+      const pal   = PALETTE[p.colorIdx !== undefined ? p.colorIdx % PALETTE.length : pi % PALETTE.length];
+      const tasks = this._state.tasks.filter(t => t.personId === p.id && occurrencesOnDate(t, iso));
+      const visible = tasks.filter(t => this._showChecked || getOcc(t, iso) !== 'checked');
+      const done  = tasks.filter(t => getOcc(t, iso) !== 'todo').length;
 
-    if (overdueTasks.length > 0) {
-      html += `<div class="task-group-label" style="color:var(--u-overdue-text)">⚠ Nesplnené z predchádzajúcich dní</div>`;
-      overdueTasks.forEach(t => { html += this._taskRowHtml(t, t.overdueDate, 'overdue'); });
-    }
+      const avatarHTML = p.avatar
+        ? `<img src="${p.avatar}" alt="">`
+        : this._initials(p.name);
 
-    if (dayTasks.length === 0 && overdueTasks.length === 0) {
-      html += `<div class="empty"><div class="empty-icon">🎉</div>Na tento deň nie sú žiadne úlohy</div>`;
-    } else if (dayTasks.length > 0) {
-      if (overdueTasks.length > 0) html += `<div class="task-group-label">Dnešné úlohy</div>`;
-      const showChecked = this._state.settings.showChecked;
-      dayTasks
-        .filter(t => showChecked || t.st !== 'checked')
-        .forEach(t => { html += this._taskRowHtml(t, this._viewDate, isOverdue(this._viewDate) ? 'overdue' : t.st); });
-    }
+      const progStyle = done === tasks.length && tasks.length > 0
+        ? `background:#EAF3DE;color:#27500A`
+        : `background:${pal.bg};color:${pal.text}`;
 
-    html += `<button class="add-btn" id="add-task-day">＋ Pridať úlohu</button>`;
-    sec.innerHTML = html;
+      const taskRows = visible.length === 0
+        ? `<div class="empty" style="padding:12px">Žiadne úlohy na tento deň</div>`
+        : visible.map(t => this._taskRowHTML(t, iso, isToday)).join('');
 
-    sec.querySelector('#prev-day').addEventListener('click', () => {
-      this._viewDate = addDays(this._viewDate, -1);
-      this._renderSection(0);
-    });
-    sec.querySelector('#next-day').addEventListener('click', () => {
-      this._viewDate = addDays(this._viewDate, 1);
-      this._renderSection(0);
-    });
-    const goToday = sec.querySelector('#go-today');
-    if (goToday) goToday.addEventListener('click', () => {
-      this._viewDate = today();
-      this._renderSection(0);
-    });
-    sec.querySelector('#add-task-day').addEventListener('click', () => {
-      this._openTaskModal(null, this._viewDate);
-    });
+      return `
+        <div class="pcard" data-pid="${p.id}" style="border-color:${pal.border}">
+          <div class="pcard-hdr" style="background:${pal.bg}">
+            <div class="pcard-avatar" style="background:${pal.border};color:#fff">${avatarHTML}</div>
+            <div class="pcard-info">
+              <div class="pcard-name" style="color:${pal.text}">${p.name}</div>
+              <div class="pcard-meta">${p.role || 'Člen'} · ${done}/${tasks.length} dnes</div>
+            </div>
+            <span class="pcard-prog" style="${progStyle}">${done}/${tasks.length}</span>
+          </div>
+          <div class="task-list">${taskRows}</div>
+          ${this._adminOn ? `<div style="padding:6px 10px;border-top:1px solid var(--bd)">
+            <button class="add-btn" data-add-person="${p.id}">＋ Pridať úlohu pre ${p.name}</button>
+          </div>` : ''}
+        </div>`;
+    }).join('');
 
-    this._attachTaskRowListeners(sec);
-  }
-
-  _getTasksForDate(dateStr) {
-    const result = [];
-    for (const task of this._state.tasks) {
-      const occs = occurrencesInRange(task, dateStr, dateStr);
-      if (occs.length > 0) {
-        const st = getOccState(task, dateStr);
-        const person = this._state.persons.find(p => p.id === task.personId);
-        result.push({ task, st, person });
-      }
-    }
-    return result;
-  }
-
-  _taskRowHtml(item, dateStr, stateOverride) {
-    const { task, st, person } = item;
-    const displaySt = stateOverride || st;
-    const badges = {
-      todo: 'Treba spraviť',
-      done: 'Urobená',
-      checked: 'Skontrolovaná',
-      overdue: 'Nesplnená'
-    };
-    const repeatLabels = {
-      none: '', daily: 'denne', weekly: 'týždenne', monthly: 'mesačne', yearly: 'ročne'
-    };
-    const avatarContent = person?.avatar
-      ? `<img src="${person.avatar}" alt="">`
-      : `<span>${(person?.name || '?')[0].toUpperCase()}</span>`;
-
-    const repeatTag = task.repeat && task.repeat !== 'none'
-      ? `<span class="task-repeat-tag">${repeatLabels[task.repeat] || task.repeat}</span>` : '';
-
-    return `
-      <div class="task-row" data-task-id="${task.id}" data-date="${dateStr}">
-        <div class="task-main">
-          <span class="task-dot ${displaySt}"></span>
-          <span class="task-avatar">${avatarContent}</span>
-          <span class="task-name">${task.name}</span>
-          ${repeatTag}
-          <span class="task-badge ${displaySt}">${badges[displaySt] || displaySt}</span>
-          <span class="task-chevron">›</span>
-        </div>
-        <div class="task-detail">
-          ${this._taskDetailHtml(task, dateStr, st)}
-        </div>
-      </div>
-    `;
-  }
-
-  _taskDetailHtml(task, dateStr, st) {
-    let btns = '';
-    if (st === 'todo') {
-      btns += `<button class="action-btn done-btn" data-action="done" data-task-id="${task.id}" data-date="${dateStr}">✓ Urobená</button>`;
-    } else if (st === 'done') {
-      btns += `<button class="action-btn checked-btn" data-action="checked" data-task-id="${task.id}" data-date="${dateStr}">✓✓ Skontrolovaná</button>`;
-      btns += `<button class="action-btn revert-btn" data-action="todo" data-task-id="${task.id}" data-date="${dateStr}">Vrátiť</button>`;
-    } else if (st === 'checked') {
-      btns += `<button class="action-btn revert-btn" data-action="todo" data-task-id="${task.id}" data-date="${dateStr}">Vrátiť</button>`;
-    }
-    if (task.note) {
-      btns = `<span style="font-size:12px;color:var(--u-muted);flex-basis:100%;margin-bottom:4px">${task.note}</span>` + btns;
-    }
-    const adminPart = this._adminUnlocked
-      ? `<div class="admin-acts">
-           <button class="edit-icon" data-edit-task="${task.id}" data-date="${dateStr}" title="Upraviť">✎</button>
-           <button class="del-icon" data-del-task="${task.id}" title="Zmazať">✕</button>
-         </div>` : '';
-    return btns + adminPart;
-  }
-
-  _attachTaskRowListeners(container) {
-    // Toggle otvoriť/zatvoriť
-    container.querySelectorAll('.task-main').forEach(main => {
-      main.addEventListener('click', () => {
-        const row = main.closest('.task-row');
-        row.classList.toggle('open');
+    // Event listenery
+    grid.querySelectorAll('.task-main').forEach(el => {
+      el.addEventListener('click', () => {
+        el.closest('.task-row').classList.toggle('open');
       });
     });
-    // Akčné tlačidlá
-    container.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+    grid.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', e => {
         e.stopPropagation();
-        const taskId = btn.dataset.taskId;
-        const dateStr = btn.dataset.date;
-        const action = btn.dataset.action;
+        const { taskId, date, action } = btn.dataset;
         const task = this._state.tasks.find(t => t.id === taskId);
         if (!task) return;
-        setOccState(task, dateStr, action);
-        this._saveData();
-        this._renderSection(this._activeTab);
+        setOcc(task, date, action);
+        this._save();
+        this._renderPersonsGrid();
       });
     });
-    // Edit
-    container.querySelectorAll('[data-edit-task]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+    grid.querySelectorAll('[data-edit-task]').forEach(btn => {
+      btn.addEventListener('click', e => {
         e.stopPropagation();
         const task = this._state.tasks.find(t => t.id === btn.dataset.editTask);
-        if (task) this._openTaskModal(task, btn.dataset.date || null);
+        if (task) this._openTaskModal(task);
       });
     });
-    // Delete
-    container.querySelectorAll('[data-del-task]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+    grid.querySelectorAll('[data-del-task]').forEach(btn => {
+      btn.addEventListener('click', e => {
         e.stopPropagation();
         if (!confirm('Naozaj zmazať úlohu?')) return;
         this._state.tasks = this._state.tasks.filter(t => t.id !== btn.dataset.delTask);
-        this._saveData();
-        this._renderSection(this._activeTab);
+        this._save(); this._renderPersonsGrid();
       });
     });
-  }
-
-  // ── Sekcia: Osoby ─────────────────────────────────────────────────────────
-
-  _renderPersons(sec) {
-    const todayStr = today();
-    if (this._state.persons.length === 0) {
-      sec.innerHTML = `<div class="empty"><div class="empty-icon">👥</div>Zatiaľ žiadne osoby.<br>Pridaj ich v sekcii ⚙</div>`;
-      return;
-    }
-
-    let html = `<div class="persons-grid">`;
-    for (const person of this._state.persons) {
-      const personTasks = this._state.tasks.filter(t => t.personId === person.id);
-      const todayTasks = personTasks.filter(t => occurrencesInRange(t, todayStr, todayStr).length > 0);
-      const doneCnt = todayTasks.filter(t => getOccState(t, todayStr) !== 'todo').length;
-      const avatarContent = person.avatar
-        ? `<img src="${person.avatar}" alt="">`
-        : person.name[0].toUpperCase();
-
-      html += `
-        <div class="person-card">
-          <div class="person-card-header">
-            <div class="person-avatar-lg">${typeof avatarContent === 'string' && avatarContent.startsWith('<img') ? avatarContent : avatarContent}</div>
-            <div>
-              <div class="person-name-lg">${person.name}</div>
-              <div class="person-stats">${doneCnt}/${todayTasks.length} dnes hotovo</div>
-            </div>
-          </div>
-          <div class="person-tasks">
-      `;
-
-      const showChecked = this._state.settings.showChecked;
-      const filtered = todayTasks.filter(t => showChecked || getOccState(t, todayStr) !== 'checked');
-      if (filtered.length === 0) {
-        html += `<div class="empty" style="padding:16px 12px">Žiadne úlohy dnes</div>`;
-      } else {
-        for (const task of filtered) {
-          const st = getOccState(task, todayStr);
-          const badges = { todo: '○', done: '◑', checked: '●' };
-          html += `
-            <div class="person-task-row" data-task-id="${task.id}" data-date="${todayStr}">
-              <span style="font-size:16px;color:${st === 'todo' ? '#EF9F27' : st === 'done' ? '#639922' : '#1D9E75'}">${badges[st] || '○'}</span>
-              <span class="person-task-name">${task.name}</span>
-              <span class="person-task-date">${task.repeat && task.repeat !== 'none' ? '↻' : fmtDate(task.date)}</span>
-            </div>
-          `;
-        }
-      }
-
-      html += `</div></div>`;
-    }
-    html += `</div>`;
-    sec.innerHTML = html;
-
-    // Klik na úlohu osoby → prepnúť stav
-    sec.querySelectorAll('.person-task-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const taskId = row.dataset.taskId;
-        const dateStr = row.dataset.date;
-        const task = this._state.tasks.find(t => t.id === taskId);
-        if (!task) return;
-        const st = getOccState(task, dateStr);
-        const next = st === 'todo' ? 'done' : st === 'done' ? 'checked' : 'todo';
-        setOccState(task, dateStr, next);
-        this._saveData();
-        this._renderSection(1);
-      });
-    });
-  }
-
-  // ── Sekcia: Admin ─────────────────────────────────────────────────────────
-
-  _renderAdmin(sec) {
-    if (!this._adminUnlocked) {
-      this._renderPin(sec);
-      return;
-    }
-    this._renderAdminContent(sec);
-  }
-
-  _renderPin(sec) {
-    if (!this._state.adminPin) {
-      this._pinMode = 'setup1';
-    } else {
-      this._pinMode = 'unlock';
-    }
-    sec.innerHTML = `
-      <div class="pin-wrap">
-        <div style="font-size:13px;color:var(--u-muted);margin-bottom:4px" id="pin-sub">
-          ${this._pinMode === 'setup1' ? 'Nastavte 4-ciferný PIN' : 'Zadajte PIN'}
-        </div>
-        <div class="pin-dots">
-          <div class="pin-dot" id="d0"></div>
-          <div class="pin-dot" id="d1"></div>
-          <div class="pin-dot" id="d2"></div>
-          <div class="pin-dot" id="d3"></div>
-        </div>
-        <div class="pin-err" id="pin-err"></div>
-        <div class="pin-grid">
-          ${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k =>
-            `<button class="pin-key${k === '⌫' ? ' del' : ''}" data-key="${k}">${k}</button>`
-          ).join('')}
-        </div>
-      </div>
-    `;
-    sec.querySelectorAll('.pin-key').forEach(btn => {
-      btn.addEventListener('click', () => this._pinKey(btn.dataset.key, sec));
-    });
-  }
-
-  _updateDots(sec) {
-    for (let i = 0; i < 4; i++) {
-      const d = sec.querySelector(`#d${i}`);
-      if (d) d.classList.toggle('filled', i < this._pinInput.length);
-    }
-  }
-
-  _pinKey(k, sec) {
-    if (k === '⌫') {
-      this._pinInput = this._pinInput.slice(0, -1);
-      this._updateDots(sec);
-      return;
-    }
-    if (k === '' || this._pinInput.length >= 4) return;
-    this._pinInput += k;
-    this._updateDots(sec);
-    if (this._pinInput.length === 4) setTimeout(() => this._processPin(sec), 150);
-  }
-
-  _processPin(sec) {
-    const errEl = sec.querySelector('#pin-err');
-    const subEl = sec.querySelector('#pin-sub');
-    if (this._pinMode === 'unlock') {
-      if (this._pinInput === this._state.adminPin) {
-        this._adminUnlocked = true;
-        this._pinInput = '';
-        this._renderAdminContent(sec);
-      } else {
-        if (errEl) errEl.textContent = 'Nesprávny PIN';
-        this._pinInput = '';
-        this._updateDots(sec);
-      }
-    } else if (this._pinMode === 'setup1') {
-      this._pinSetupFirst = this._pinInput;
-      this._pinInput = '';
-      this._pinMode = 'setup2';
-      if (subEl) subEl.textContent = 'Zopakujte PIN';
-      if (errEl) errEl.textContent = '';
-      this._updateDots(sec);
-    } else if (this._pinMode === 'setup2') {
-      if (this._pinInput === this._pinSetupFirst) {
-        this._state.adminPin = this._pinInput;
-        this._adminUnlocked = true;
-        this._pinInput = '';
-        this._saveData();
-        this._renderAdminContent(sec);
-      } else {
-        if (errEl) errEl.textContent = 'PINy sa nezhodujú';
-        this._pinInput = '';
-        this._pinSetupFirst = '';
-        this._pinMode = 'setup1';
-        if (subEl) subEl.textContent = 'Nastavte 4-ciferný PIN';
-        this._updateDots(sec);
-      }
-    }
-  }
-
-  _renderAdminContent(sec) {
-    let html = `<div class="admin-section">`;
-    // Osoby
-    html += `<div class="task-group-label">Osoby</div>`;
-    for (const person of this._state.persons) {
-      html += `
-        <div class="person-chip">
-          <div class="task-avatar">${person.avatar ? `<img src="${person.avatar}">` : person.name[0]}</div>
-          <span class="person-chip-name">${person.name}</span>
-          <button class="edit-icon" data-edit-person="${person.id}" title="Upraviť">✎</button>
-          <button class="del-icon" data-del-person="${person.id}" title="Zmazať">✕</button>
-        </div>
-      `;
-    }
-    html += `<button class="add-btn" id="add-person-btn">＋ Pridať osobu</button>`;
-
-    // Nastavenia
-    html += `<div class="task-group-label" style="margin-top:16px">Nastavenia</div>`;
-    html += `
-      <div class="admin-row">
-        <div>
-          <div class="admin-row-label">Zmeniť PIN</div>
-          <div class="admin-row-sub">Aktuálne je nastavený PIN</div>
-        </div>
-        <button class="btn-cancel" id="change-pin-btn">Zmeniť</button>
-      </div>
-      <div class="admin-row">
-        <div>
-          <div class="admin-row-label">Zamknúť admin</div>
-          <div class="admin-row-sub">Vyžadovať PIN znova</div>
-        </div>
-        <button class="btn-cancel" id="lock-btn">Zamknúť</button>
-      </div>
-    `;
-    html += `</div>`;
-    sec.innerHTML = html;
-
-    sec.querySelector('#add-person-btn').addEventListener('click', () => this._openPersonModal(null));
-    sec.querySelector('#change-pin-btn').addEventListener('click', () => {
-      this._state.adminPin = null;
-      this._adminUnlocked = false;
-      this._renderAdmin(sec);
-    });
-    sec.querySelector('#lock-btn').addEventListener('click', () => {
-      this._adminUnlocked = false;
-      this._renderAdmin(sec);
-    });
-    sec.querySelectorAll('[data-edit-person]').forEach(btn => {
+    grid.querySelectorAll('[data-add-person]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const p = this._state.persons.find(x => x.id === btn.dataset.editPerson);
-        if (p) this._openPersonModal(p);
-      });
-    });
-    sec.querySelectorAll('[data-del-person]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (!confirm('Zmazať osobu a všetky jej úlohy?')) return;
-        const pid = btn.dataset.delPerson;
-        this._state.persons = this._state.persons.filter(p => p.id !== pid);
-        this._state.tasks = this._state.tasks.filter(t => t.personId !== pid);
-        this._saveData();
-        this._renderSection(2);
+        const pid = btn.dataset.addPerson;
+        this._openTaskModal(null, pid);
       });
     });
   }
 
-  // ── Modály ───────────────────────────────────────────────────────────────
+  _taskRowHTML(task, iso, isToday) {
+    const raw = getOcc(task, iso);
+    const isOverdue = isToday && iso < todayISO();
+    const st  = (raw === 'todo' && iso < todayISO() && isToday) ? 'overdue' : raw;
+    const stDisplay = st === 'overdue' ? 'overdue' : raw;
 
-  _openTaskModal(task, defaultDate) {
-    const overlay = this.shadowRoot.querySelector('#modal-overlay');
-    const modal = this.shadowRoot.querySelector('#modal');
+    const badges = { todo:'Treba spraviť', done:'Urobená', checked:'Skontrolovaná', overdue:'Nesplnená' };
+    const dotCls = { todo:'dot-todo', done:'dot-done', checked:'dot-checked', overdue:'dot-overdue' };
+    const badgeCls = { todo:'badge-todo', done:'badge-done', checked:'badge-checked', overdue:'badge-overdue' };
+
+    const rtag = task.repeat && task.repeat !== 'none'
+      ? `<span class="task-rtag">${REPEAT_LABEL[task.repeat] || task.repeat}</span>` : '';
+
+    let detail = '';
+    if (task.note) detail += `<span class="task-note">${task.note}</span>`;
+    if (raw === 'todo')    detail += `<button class="act-btn btn-done" data-action="done" data-task-id="${task.id}" data-date="${iso}">✓ Označiť ako urobená</button>`;
+    if (raw === 'done')    detail += `<button class="act-btn btn-checked" data-action="checked" data-task-id="${task.id}" data-date="${iso}">✓✓ Označiť ako skontrolovaná</button>`;
+    if (raw !== 'todo')    detail += `<button class="act-btn btn-revert" data-action="todo" data-task-id="${task.id}" data-date="${iso}">Vrátiť</button>`;
+    if (this._adminOn) {
+      detail += `<div class="admin-acts">
+        <button class="edit-ic" data-edit-task="${task.id}" title="Upraviť">✎</button>
+        <button class="del-ic" data-del-task="${task.id}" title="Zmazať">✕</button>
+      </div>`;
+    }
+
+    return `
+      <div class="task-row" data-tid="${task.id}">
+        <div class="task-main">
+          <span class="task-dot ${dotCls[stDisplay] || 'dot-todo'}"></span>
+          <span class="task-name">${task.name}</span>
+          ${rtag}
+          <span class="task-badge ${badgeCls[stDisplay] || 'badge-todo'}">${badges[stDisplay] || stDisplay}</span>
+          <span class="task-chev">›</span>
+        </div>
+        <div class="task-detail">${detail}</div>
+      </div>`;
+  }
+
+  _initials(name) {
+    return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  }
+
+  // ── Modal: Úloha ─────────────────────────────────────────────────────────────
+  _openTaskModal(task, defaultPersonId) {
     const isEdit = !!task;
     const persons = this._state.persons;
+    this._weekSel = task?.repeatDays ? [...task.repeatDays] : [];
+    const selPid  = task?.personId || defaultPersonId || persons[0]?.id || '';
+    const selRep  = task?.repeat || 'none';
 
-    const selPersonId = task?.personId || persons[0]?.id || '';
-    const selDate = task?.date || defaultDate || today();
-    const selRepeat = task?.repeat || 'none';
-    this._weekdaysSel = task?.repeatDays ? [...task.repeatDays] : [];
-
-    const dayNames = ['Ne', 'Po', 'Ut', 'St', 'Št', 'Pi', 'So'];
-    const repeatOpts = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
-    const repeatLabels = ['Jednorazová', 'Denne', 'Týždenne', 'Mesačne', 'Ročne'];
-
+    const modal = this.shadowRoot.querySelector('#modal');
     modal.innerHTML = `
       <div class="modal-title">${isEdit ? 'Upraviť úlohu' : 'Nová úloha'}</div>
-      <div class="form-group">
-        <label class="form-label">Názov</label>
-        <input class="form-input" id="t-name" value="${task?.name || ''}" placeholder="Názov úlohy">
+      <div class="fg"><label class="fl">Názov</label>
+        <input class="fi" id="t-name" value="${task?.name || ''}" placeholder="Názov úlohy"></div>
+      <div class="fg"><label class="fl">Poznámka</label>
+        <textarea class="fta" id="t-note">${task?.note || ''}</textarea></div>
+      <div class="fg"><label class="fl">Osoba</label>
+        <select class="fsel" id="t-person">
+          ${persons.map(p => `<option value="${p.id}"${p.id===selPid?' selected':''}>${p.name}</option>`).join('')}
+          ${persons.length===0?'<option value="">— žiadna —</option>':''}
+        </select></div>
+      <div class="fg"><label class="fl">Dátum začiatku</label>
+        <input class="fi" type="date" id="t-date" value="${task?.date || this._viewDate}"></div>
+      <div class="fg"><label class="fl">Opakovanie</label>
+        <select class="fsel" id="t-repeat">
+          ${Object.entries(REPEAT_LABEL).map(([v,l])=>`<option value="${v}"${v===selRep?' selected':''}>${l}</option>`).join('')}
+        </select></div>
+      <div class="fg" id="wd-wrap" style="${selRep==='weekly'?'':'display:none'}">
+        <label class="fl">Dni v týždni</label>
+        <div class="wdgrid">${DOW_LABEL.map((n,i)=>
+          `<button type="button" class="wdbtn${this._weekSel.includes(i)?' sel':''}" data-dow="${i}">${n}</button>`
+        ).join('')}</div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Poznámka</label>
-        <textarea class="form-textarea" id="t-note">${task?.note || ''}</textarea>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Osoba</label>
-        <select class="form-select" id="t-person">
-          ${persons.map(p => `<option value="${p.id}" ${p.id === selPersonId ? 'selected' : ''}>${p.name}</option>`).join('')}
-          ${persons.length === 0 ? '<option value="">— žiadna osoba —</option>' : ''}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Dátum začiatku</label>
-        <input class="form-input" type="date" id="t-date" value="${selDate}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Opakovanie</label>
-        <select class="form-select" id="t-repeat">
-          ${repeatOpts.map((v, i) => `<option value="${v}" ${v === selRepeat ? 'selected' : ''}>${repeatLabels[i]}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group" id="weekdays-wrap" style="${selRepeat === 'weekly' ? '' : 'display:none'}">
-        <label class="form-label">Dni v týždni</label>
-        <div class="weekday-grid">
-          ${dayNames.map((n, i) =>
-            `<button type="button" class="weekday-btn${this._weekdaysSel.includes(i) ? ' sel' : ''}" data-dow="${i}">${n}</button>`
-          ).join('')}
-        </div>
-      </div>
-      <div class="modal-footer">
-        ${isEdit ? `<button class="btn-danger" id="t-del">Zmazať</button>` : ''}
+      <div class="mfooter">
+        ${isEdit?`<button class="btn-del" id="t-del">Zmazať</button>`:''}
         <button class="btn-cancel" id="t-cancel">Zrušiť</button>
         <button class="btn-save" id="t-save">Uložiť</button>
-      </div>
-    `;
+      </div>`;
 
-    modal.querySelector('#t-repeat').addEventListener('change', (e) => {
-      modal.querySelector('#weekdays-wrap').style.display = e.target.value === 'weekly' ? '' : 'none';
+    modal.querySelector('#t-repeat').addEventListener('change', e => {
+      modal.querySelector('#wd-wrap').style.display = e.target.value === 'weekly' ? '' : 'none';
     });
-    modal.querySelectorAll('.weekday-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const dow = +btn.dataset.dow;
-        if (this._weekdaysSel.includes(dow)) {
-          this._weekdaysSel = this._weekdaysSel.filter(d => d !== dow);
-          btn.classList.remove('sel');
-        } else {
-          this._weekdaysSel.push(dow);
-          btn.classList.add('sel');
-        }
-      });
-    });
+    modal.querySelectorAll('.wdbtn').forEach(b => b.addEventListener('click', () => {
+      const d = +b.dataset.dow;
+      if (this._weekSel.includes(d)) { this._weekSel = this._weekSel.filter(x=>x!==d); b.classList.remove('sel'); }
+      else { this._weekSel.push(d); b.classList.add('sel'); }
+    }));
     modal.querySelector('#t-cancel').addEventListener('click', () => this._closeModal());
     modal.querySelector('#t-save').addEventListener('click', () => {
       const name = modal.querySelector('#t-name').value.trim();
       if (!name) return;
-      const data = {
-        id: task?.id || uid(),
-        name,
-        note: modal.querySelector('#t-note').value.trim(),
-        personId: modal.querySelector('#t-person').value,
-        date: modal.querySelector('#t-date').value,
-        repeat: modal.querySelector('#t-repeat').value,
-        repeatDays: this._weekdaysSel.slice().sort(),
+      const obj = {
+        id: task?.id || uid(), name,
+        note:       modal.querySelector('#t-note').value.trim(),
+        personId:   modal.querySelector('#t-person').value,
+        date:       modal.querySelector('#t-date').value,
+        repeat:     modal.querySelector('#t-repeat').value,
+        repeatDays: this._weekSel.slice().sort(),
         occurrences: task?.occurrences || {}
       };
       if (isEdit) {
-        const idx = this._state.tasks.findIndex(t => t.id === data.id);
-        if (idx >= 0) this._state.tasks[idx] = data;
+        const i = this._state.tasks.findIndex(t => t.id === obj.id);
+        if (i >= 0) this._state.tasks[i] = obj;
       } else {
-        this._state.tasks.push(data);
+        this._state.tasks.push(obj);
       }
-      this._saveData();
-      this._closeModal();
-      this._renderSection(this._activeTab);
+      this._save(); this._closeModal(); this._renderPersonsGrid();
     });
-    if (isEdit) {
-      modal.querySelector('#t-del').addEventListener('click', () => {
-        if (!confirm('Naozaj zmazať úlohu?')) return;
-        this._state.tasks = this._state.tasks.filter(t => t.id !== task.id);
-        this._saveData();
-        this._closeModal();
-        this._renderSection(this._activeTab);
-      });
-    }
+    if (isEdit) modal.querySelector('#t-del').addEventListener('click', () => {
+      if (!confirm('Naozaj zmazať?')) return;
+      this._state.tasks = this._state.tasks.filter(t => t.id !== task.id);
+      this._save(); this._closeModal(); this._renderPersonsGrid();
+    });
 
-    overlay.classList.add('open');
+    this._openOverlay();
   }
 
-  _openPersonModal(person) {
-    const overlay = this.shadowRoot.querySelector('#modal-overlay');
+  // ── Modal: Admin ─────────────────────────────────────────────────────────────
+  _openAdminModal() {
     const modal = this.shadowRoot.querySelector('#modal');
+    if (!this._adminOn) {
+      this._renderPin(modal);
+    } else {
+      this._renderAdminContent(modal);
+    }
+    this._openOverlay();
+  }
+
+  _renderPin(modal) {
+    this._pinMode  = this._state.adminPin ? 'unlock' : 'setup1';
+    this._pinInput = '';
+    modal.innerHTML = `
+      <div class="modal-title">Admin prístup</div>
+      <div class="pin-wrap">
+        <div class="pin-sub" id="pin-sub">${this._pinMode==='unlock'?'Zadajte PIN':'Nastavte 4-ciferný PIN'}</div>
+        <div class="pin-dots">${[0,1,2,3].map(i=>`<div class="pin-dot" id="pd${i}"></div>`).join('')}</div>
+        <div class="pin-err" id="pin-err"></div>
+        <div class="pin-grid">
+          ${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k=>
+            `<button class="pin-key" data-k="${k}">${k}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="mfooter"><button class="btn-cancel" id="pin-cancel">Zrušiť</button></div>`;
+    modal.querySelector('#pin-cancel').addEventListener('click', () => this._closeModal());
+    modal.querySelectorAll('.pin-key').forEach(b => b.addEventListener('click', () => this._pinKey(b.dataset.k, modal)));
+  }
+
+  _pinDots(modal) {
+    for (let i=0;i<4;i++) {
+      const d = modal.querySelector(`#pd${i}`);
+      if (d) d.classList.toggle('f', i < this._pinInput.length);
+    }
+  }
+
+  _pinKey(k, modal) {
+    if (k==='⌫') { this._pinInput = this._pinInput.slice(0,-1); this._pinDots(modal); return; }
+    if (k==='' || this._pinInput.length>=4) return;
+    this._pinInput += k; this._pinDots(modal);
+    if (this._pinInput.length===4) setTimeout(()=>this._processPin(modal),150);
+  }
+
+  _processPin(modal) {
+    const err = modal.querySelector('#pin-err');
+    const sub = modal.querySelector('#pin-sub');
+    if (this._pinMode==='unlock') {
+      if (this._pinInput===this._state.adminPin) {
+        this._adminOn=true; this._pinInput=''; this._closeModal();
+        this.shadowRoot.querySelector('#btn-admin').classList.add('on');
+        this._renderPersonsGrid();
+      } else {
+        if(err) err.textContent='Nesprávny PIN';
+        this._pinInput=''; this._pinDots(modal);
+      }
+    } else if (this._pinMode==='setup1') {
+      this._pinFirst=this._pinInput; this._pinInput=''; this._pinMode='setup2';
+      if(sub) sub.textContent='Zopakujte PIN'; if(err) err.textContent=''; this._pinDots(modal);
+    } else if (this._pinMode==='setup2') {
+      if (this._pinInput===this._pinFirst) {
+        this._state.adminPin=this._pinInput; this._adminOn=true; this._pinInput='';
+        this._save(); this._closeModal();
+        this.shadowRoot.querySelector('#btn-admin').classList.add('on');
+        this._renderPersonsGrid();
+      } else {
+        if(err) err.textContent='PINy sa nezhodujú';
+        this._pinInput=''; this._pinFirst=''; this._pinMode='setup1';
+        if(sub) sub.textContent='Nastavte 4-ciferný PIN'; this._pinDots(modal);
+      }
+    }
+  }
+
+  _renderAdminContent(modal) {
+    modal.innerHTML = `
+      <div class="modal-title">⚙ Admin</div>
+      <div class="adm-wrap">
+        <div class="adm-section-lbl">Osoby</div>
+        ${this._state.persons.map((p,pi) => {
+          const pal = PALETTE[(p.colorIdx||pi) % PALETTE.length];
+          const av  = p.avatar ? `<img src="${p.avatar}" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover">` : this._initials(p.name);
+          return `<div class="person-chip">
+            <div class="pcard-avatar" style="width:26px;height:26px;font-size:11px;background:${pal.border};color:#fff">${av}</div>
+            <span class="person-chip-name">${p.name}</span>
+            <span class="person-chip-role">${p.role||'Člen'}</span>
+            <button class="edit-ic" data-edit-person="${p.id}" title="Upraviť">✎</button>
+            <button class="del-ic" data-del-person="${p.id}" title="Zmazať">✕</button>
+          </div>`;
+        }).join('')}
+        <button class="add-btn" id="adm-add-person">＋ Pridať osobu</button>
+
+        <div class="adm-section-lbl" style="margin-top:16px">Nastavenia</div>
+        <div class="adm-row">
+          <div><div class="adm-row-lbl">Zmeniť PIN</div></div>
+          <button class="btn-cancel" id="adm-change-pin">Zmeniť</button>
+        </div>
+        <div class="adm-row">
+          <div><div class="adm-row-lbl">Zamknúť admin</div></div>
+          <button class="btn-cancel" id="adm-lock">Zamknúť</button>
+        </div>
+      </div>
+      <div class="mfooter"><button class="btn-cancel" id="adm-close">Zavrieť</button></div>`;
+
+    modal.querySelector('#adm-close').addEventListener('click', () => this._closeModal());
+    modal.querySelector('#adm-add-person').addEventListener('click', () => this._openPersonModal(null, modal));
+    modal.querySelector('#adm-change-pin').addEventListener('click', () => {
+      this._state.adminPin=null; this._adminOn=false; this._renderPin(modal);
+    });
+    modal.querySelector('#adm-lock').addEventListener('click', () => {
+      this._adminOn=false;
+      this.shadowRoot.querySelector('#btn-admin').classList.remove('on');
+      this._closeModal(); this._renderPersonsGrid();
+    });
+    modal.querySelectorAll('[data-edit-person]').forEach(b => b.addEventListener('click', () => {
+      const p = this._state.persons.find(x=>x.id===b.dataset.editPerson);
+      if(p) this._openPersonModal(p, modal);
+    }));
+    modal.querySelectorAll('[data-del-person]').forEach(b => b.addEventListener('click', () => {
+      if(!confirm('Zmazať osobu a jej úlohy?')) return;
+      const pid=b.dataset.delPerson;
+      this._state.persons=this._state.persons.filter(p=>p.id!==pid);
+      this._state.tasks=this._state.tasks.filter(t=>t.personId!==pid);
+      this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
+    }));
+  }
+
+  _openPersonModal(person, parentModal) {
     const isEdit = !!person;
+    const modal  = this.shadowRoot.querySelector('#modal');
+    const colorIdx = person?.colorIdx ?? this._state.persons.length;
 
     modal.innerHTML = `
-      <div class="modal-title">${isEdit ? 'Upraviť osobu' : 'Nová osoba'}</div>
-      <div class="form-group">
-        <label class="form-label">Meno</label>
-        <input class="form-input" id="p-name" value="${person?.name || ''}" placeholder="Meno osoby">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Avatar (URL obrázka, nepovinné)</label>
-        <input class="form-input" id="p-avatar" value="${person?.avatar || ''}" placeholder="https://...">
-      </div>
-      <div class="modal-footer">
-        ${isEdit ? `<button class="btn-danger" id="p-del">Zmazať</button>` : ''}
-        <button class="btn-cancel" id="p-cancel">Zrušiť</button>
+      <div class="modal-title">${isEdit?'Upraviť osobu':'Nová osoba'}</div>
+      <div class="fg"><label class="fl">Meno</label>
+        <input class="fi" id="p-name" value="${person?.name||''}" placeholder="Meno osoby"></div>
+      <div class="fg"><label class="fl">Rola</label>
+        <select class="fsel" id="p-role">
+          ${ROLES.map(r=>`<option${(person?.role||'Dieťa')===r?' selected':''}>${r}</option>`).join('')}
+        </select></div>
+      <div class="fg"><label class="fl">Farba karty</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          ${PALETTE.map((pal,i)=>`<div data-ci="${i}" style="width:28px;height:28px;border-radius:50%;background:${pal.border};cursor:pointer;outline:${colorIdx===i?'3px solid var(--tx)':'none'};outline-offset:2px"></div>`).join('')}
+        </div></div>
+      <div class="fg"><label class="fl">Avatar (URL obrázka, nepovinné)</label>
+        <input class="fi" id="p-avatar" value="${person?.avatar||''}" placeholder="https://..."></div>
+      <div class="mfooter">
+        ${isEdit?`<button class="btn-del" id="p-del">Zmazať</button>`:''}
+        <button class="btn-cancel" id="p-back">Späť</button>
         <button class="btn-save" id="p-save">Uložiť</button>
-      </div>
-    `;
+      </div>`;
 
-    modal.querySelector('#p-cancel').addEventListener('click', () => this._closeModal());
+    let selColor = colorIdx;
+    modal.querySelectorAll('[data-ci]').forEach(dot => {
+      dot.addEventListener('click', () => {
+        selColor = +dot.dataset.ci;
+        modal.querySelectorAll('[data-ci]').forEach(d => d.style.outline = 'none');
+        dot.style.outline = '3px solid var(--tx)';
+      });
+    });
+    modal.querySelector('#p-back').addEventListener('click', () => {
+      if (parentModal) this._renderAdminContent(modal);
+      else this._closeModal();
+    });
     modal.querySelector('#p-save').addEventListener('click', () => {
       const name = modal.querySelector('#p-name').value.trim();
       if (!name) return;
-      const data = {
-        id: person?.id || uid(),
-        name,
-        avatar: modal.querySelector('#p-avatar').value.trim()
+      const obj = {
+        id:       person?.id || uid(), name,
+        role:     modal.querySelector('#p-role').value,
+        colorIdx: selColor,
+        avatar:   modal.querySelector('#p-avatar').value.trim()
       };
       if (isEdit) {
-        const idx = this._state.persons.findIndex(p => p.id === data.id);
-        if (idx >= 0) this._state.persons[idx] = data;
+        const i = this._state.persons.findIndex(p=>p.id===obj.id);
+        if(i>=0) this._state.persons[i]=obj;
       } else {
-        this._state.persons.push(data);
+        this._state.persons.push(obj);
       }
-      this._saveData();
-      this._closeModal();
-      this._renderSection(this._activeTab);
+      this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
     });
-    if (isEdit) {
-      modal.querySelector('#p-del').addEventListener('click', () => {
-        if (!confirm('Zmazať osobu a všetky jej úlohy?')) return;
-        this._state.persons = this._state.persons.filter(p => p.id !== person.id);
-        this._state.tasks = this._state.tasks.filter(t => t.personId !== person.id);
-        this._saveData();
-        this._closeModal();
-        this._renderSection(this._activeTab);
-      });
-    }
-
-    overlay.classList.add('open');
+    if (isEdit) modal.querySelector('#p-del').addEventListener('click', () => {
+      if(!confirm('Zmazať osobu a jej úlohy?')) return;
+      this._state.persons=this._state.persons.filter(p=>p.id!==person.id);
+      this._state.tasks=this._state.tasks.filter(t=>t.personId!==person.id);
+      this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
+    });
   }
 
-  _closeModal() {
-    this.shadowRoot.querySelector('#modal-overlay').classList.remove('open');
-    this._weekdaysSel = [];
-  }
+  _openOverlay() { this.shadowRoot.querySelector('#overlay').classList.add('open'); }
+  _closeModal()  { this.shadowRoot.querySelector('#overlay').classList.remove('open'); }
 }
 
 customElements.define('ulohy-card', UlohyCard);
