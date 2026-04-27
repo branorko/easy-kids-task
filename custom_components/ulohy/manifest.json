@@ -1,7 +1,7 @@
 {
   "domain": "ulohy",
   "name": "Úlohy pre domácnosť",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "documentation": "https://github.com/branorko/easy-kids-task",
   "issue_tracker": "https://github.com/branorko/easy-kids-task/issues",
   "codeowners": ["@branorko"],

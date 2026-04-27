@@ -16,18 +16,26 @@ DOMAIN = "ulohy"
 STORAGE_KEY = "ulohy.data"
 STORAGE_VERSION = 1
 LOVELACE_RESOURCE_URL = "/ulohy_static/ulohy-card.js"
-LOVELACE_RESOURCE_VERSION = 1
+LOVELACE_RESOURCE_VERSION = 3   # zvýšiť pri každom release JS
 
 DEFAULT_DATA = {
     "persons": [],
     "tasks": [],
+    "permanentTasks": [],
     "adminPin": None,
     "settings": {"showChecked": False}
 }
 
+_SETUP_DONE = False   # guard proti dvojitej inicializácii
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Nastavenie integrácie pri štarte HA."""
+    global _SETUP_DONE
+    if _SETUP_DONE:
+        _LOGGER.debug("[ulohy] async_setup už prebehol, preskakujem")
+        return True
+    _SETUP_DONE = True
 
     # --- Perzistentné úložisko ---
     store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
@@ -37,9 +45,25 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await store.async_save(data)
         _LOGGER.info("[ulohy] Vytvorené nové úložisko dát")
     else:
-        _LOGGER.info("[ulohy] Načítané dáta z úložiska (%d osôb, %d úloh)",
+        # Migrácia: pridaj nové polia ak chýbajú
+        changed = False
+        if "permanentTasks" not in data:
+            data["permanentTasks"] = []
+            changed = True
+        if "pointsLog" not in data:
+            data["pointsLog"] = {}
+            changed = True
+        # Migrácia bodov na osobách
+        for p in data.get("persons", []):
+            if "points" not in p:
+                p["points"] = 0
+                changed = True
+        if changed:
+            await store.async_save(data)
+        _LOGGER.info("[ulohy] Načítané dáta z úložiska (%d osôb, %d úloh, %d permanentných)",
                      len(data.get("persons", [])),
-                     len(data.get("tasks", [])))
+                     len(data.get("tasks", [])),
+                     len(data.get("permanentTasks", [])))
 
     hass.data[DOMAIN] = {"store": store, "data": data}
 
@@ -62,8 +86,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     else:
         _LOGGER.warning("[ulohy] ulohy-card.js nenájdená v %s", js_path)
 
-    # --- Auto-registrácia Lovelace resource ---
-    hass.async_create_task(_async_register_lovelace_resource(hass))
+    # --- Auto-registrácia Lovelace resource (zjednotená s ostatnými modulmi) ---
+    async def _do_register():
+        await _async_register_lovelace_resource(hass)
+    hass.async_create_task(_do_register())
 
     return True
 
@@ -71,38 +97,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     """Automaticky zaregistruje JS kartu v Lovelace resources."""
     try:
-        lovelace = hass.data.get("lovelace")
-        if lovelace is None:
-            _LOGGER.debug("[ulohy] Lovelace nie je dostupné, preskakujem registráciu resources")
-            return
-
         resource_url = f"{LOVELACE_RESOURCE_URL}?v={LOVELACE_RESOURCE_VERSION}"
-
-        # Použijeme HA storage pre lovelace resources
         resources_store = Store(hass, 1, "lovelace_resources")
         resources_data = await resources_store.async_load() or {"items": []}
         items = resources_data.get("items", [])
 
-        # Skontroluj či už existuje náš resource (s akoukoľvek verziou)
-        existing = None
-        for item in items:
-            if LOVELACE_RESOURCE_URL in item.get("url", ""):
-                existing = item
-                break
+        existing = next(
+            (item for item in items if LOVELACE_RESOURCE_URL in item.get("url", "")),
+            None
+        )
 
         if existing is None:
-            # Pridaj nový resource
             new_id = max((item.get("id", 0) for item in items), default=0) + 1
-            items.append({
-                "id": new_id,
-                "type": "module",
-                "url": resource_url
-            })
+            items.append({"id": new_id, "type": "module", "url": resource_url})
             resources_data["items"] = items
             await resources_store.async_save(resources_data)
             _LOGGER.info("[ulohy] Lovelace resource pridaný: %s", resource_url)
         elif existing.get("url") != resource_url:
-            # Aktualizuj verziu
             existing["url"] = resource_url
             await resources_store.async_save(resources_data)
             _LOGGER.info("[ulohy] Lovelace resource aktualizovaný: %s", resource_url)
@@ -124,16 +135,17 @@ class UlohyDataView(HomeAssistantView):
         self._hass = hass
 
     async def get(self, request):
-        """Vráti aktuálne dáta."""
+        """Vráti aktuálne dáta priamo zo Store (nie z cache)."""
         from aiohttp.web import Response
         import json
 
         domain_data = self._hass.data.get(DOMAIN, {})
-        data = domain_data.get("data", DEFAULT_DATA)
-        return Response(
-            text=json.dumps(data),
-            content_type="application/json",
-        )
+        store: Store = domain_data.get("store")
+        if store:
+            data = await store.async_load() or DEFAULT_DATA
+        else:
+            data = domain_data.get("data", DEFAULT_DATA)
+        return Response(text=json.dumps(data), content_type="application/json")
 
     async def post(self, request):
         """Uloží nové dáta."""
@@ -164,10 +176,7 @@ class UlohyDataView(HomeAssistantView):
                       len(body.get("persons", [])),
                       len(body.get("tasks", [])))
 
-        return Response(
-            text=json.dumps({"ok": True}),
-            content_type="application/json",
-        )
+        return Response(text=json.dumps({"ok": True}), content_type="application/json")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
@@ -177,5 +186,7 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry) -> bool:
     """Odinštalovanie integrácie."""
+    global _SETUP_DONE
+    _SETUP_DONE = False
     hass.data.pop(DOMAIN, None)
     return True
