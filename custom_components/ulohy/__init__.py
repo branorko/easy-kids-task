@@ -17,7 +17,7 @@ DOMAIN = "ulohy"
 STORAGE_KEY = "ulohy.data"
 STORAGE_VERSION = 1
 LOVELACE_RESOURCE_URL = "/ulohy_static/ulohy-card.js"
-LOVELACE_RESOURCE_VERSION = 7
+LOVELACE_RESOURCE_VERSION = 8
 
 DEFAULT_DATA = {
     "persons": [],
