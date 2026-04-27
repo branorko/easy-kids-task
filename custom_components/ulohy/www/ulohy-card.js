@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.0
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.2
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -283,10 +283,15 @@ const CSS = `
 
 /* ── Log transakcií ── */
 .log-wrap { border-top: 1px solid var(--bd); }
-.log-title {
-  font-size: 11px; font-weight: 600; color: var(--mu);
-  text-transform: uppercase; letter-spacing: .06em; padding: 7px 12px 3px;
+.log-toggle {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; padding: 7px 12px; background: none; border: none;
+  cursor: pointer; font-size: 11px; font-weight: 600; color: var(--mu);
+  text-transform: uppercase; letter-spacing: .06em; font-family: inherit;
+  transition: color .15s, background .15s; text-align: left;
 }
+.log-toggle:hover { color: var(--tx); background: var(--sf); }
+.log-body { }
 .log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .log-table td { padding: 3px 12px; border-bottom: 1px solid var(--bd); vertical-align: top; }
 .log-table tr:last-child td { border-bottom: none; }
@@ -479,7 +484,12 @@ class UlohyCard extends HTMLElement {
   async _poll() {
     try {
       const r = await this._hass.callApi('GET', 'ulohy/data');
-      if (r && typeof r === 'object') { this._state = r; this._renderPersonsGrid(); }
+      if (r && typeof r === 'object') {
+        this._state = r;
+        // Neprerender ak je otvorený nejaký detail – zavrel by ho
+        const hasOpen = this.shadowRoot.querySelector('.task-row.open');
+        if (!hasOpen) this._renderPersonsGrid();
+      }
     } catch(e) {}
   }
 
@@ -658,20 +668,24 @@ class UlohyCard extends HTMLElement {
   _renderLogHTML(person) {
     const log = (this._state.pointsLog||{})[person.id] || [];
     if (log.length === 0) return '';
-    let html = `<div class="log-wrap"><div class="log-title">História bodov</div>
-      <table class="log-table"><tbody>`;
+    let rows = '';
     for (const e of log.slice(0, 15)) {
       const cls  = e.delta >= 0 ? 'log-pos' : 'log-neg';
       const sign = e.delta >= 0 ? '+' : '';
-      html += `<tr>
+      rows += `<tr>
         <td class="log-ts">${fmtDateTime(e.ts)}</td>
         <td>${e.desc}</td>
         <td class="${cls}">${sign}${e.delta}</td>
         <td class="log-bal">${e.bal}</td>
       </tr>`;
     }
-    if (log.length > 15) html += `<tr><td colspan="4" style="color:var(--mu);text-align:center;padding:4px 12px">... a ${log.length-15} ďalších</td></tr>`;
-    return html + `</tbody></table></div>`;
+    if (log.length > 15) rows += `<tr><td colspan="4" style="color:var(--mu);text-align:center;padding:4px 12px">... a ${log.length-15} ďalších</td></tr>`;
+    return `<div class="log-wrap">
+      <button class="log-toggle" data-log-pid="${person.id}">📊 História bodov</button>
+      <div class="log-body" id="log-body-${person.id}" style="display:none">
+        <table class="log-table"><tbody>${rows}</tbody></table>
+      </div>
+    </div>`;
   }
 
   _taskRowHTML(task, iso, isToday) {
@@ -758,44 +772,18 @@ class UlohyCard extends HTMLElement {
         }
       });
     });
-    // revert
-    grid.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        const task = this._state.tasks.find(t => t.id === btn.dataset.taskId);
-        if (!task) return;
-        const iso = btn.dataset.date;
-        if (btn.dataset.action === 'todo') {
-          const prev = getDoneBy(task, iso);
-          if (prev.length) this._removePoints(prev, task.points||0, task.name);
-        }
-        setOcc(task, iso, btn.dataset.action, []);
-        this._save(); this._renderPersonsGrid();
-      });
-    });
-    // who-btn + confirm
-    grid.querySelectorAll('.task-row').forEach(row => {
-      const task = this._state.tasks.find(t => t.id === row.dataset.tid);
-      if (task) this._attachDetailListeners(row, task, row.dataset.date);
-    });
-    // edit/del
-    grid.querySelectorAll('[data-edit-task]').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        const task = this._state.tasks.find(t => t.id === btn.dataset.editTask);
-        if (task) this._openTaskModal(task);
-      });
-    });
-    grid.querySelectorAll('[data-del-task]').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        if (!confirm('Naozaj zmazať úlohu?')) return;
-        this._state.tasks = this._state.tasks.filter(t => t.id !== btn.dataset.delTask);
-        this._save(); this._renderPersonsGrid();
-      });
-    });
     grid.querySelectorAll('[data-add-person]').forEach(btn => {
       btn.addEventListener('click', () => this._openTaskModal(null, btn.dataset.addPerson));
+    });
+    // log toggle
+    grid.querySelectorAll('.log-toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const body = grid.querySelector('#log-body-' + btn.dataset.logPid);
+        if (!body) return;
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : '';
+        btn.textContent = (open ? '📊' : '📊▲') + ' História bodov';
+      });
     });
     // pts spend badge
     grid.querySelectorAll('[data-spend]').forEach(badge => {
@@ -808,6 +796,7 @@ class UlohyCard extends HTMLElement {
 
   _attachDetailListeners(row, task, iso) {
     const taskKey = task.id + '_' + iso;
+    // who-btn
     row.querySelectorAll('[data-who]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -825,6 +814,7 @@ class UlohyCard extends HTMLElement {
         }
       });
     });
+    // confirm
     row.querySelectorAll('[data-confirm]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -832,6 +822,34 @@ class UlohyCard extends HTMLElement {
         setOcc(task, iso, 'done', doneBy);
         if (doneBy.length) this._addPoints(doneBy, task.points||0, task.name);
         delete this._whoSel[taskKey];
+        this._save(); this._renderPersonsGrid();
+      });
+    });
+    // revert
+    row.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (btn.dataset.action === 'todo') {
+          const prev = getDoneBy(task, iso);
+          if (prev.length) this._removePoints(prev, task.points||0, task.name);
+        }
+        setOcc(task, iso, btn.dataset.action, []);
+        this._save(); this._renderPersonsGrid();
+      });
+    });
+    // edit
+    row.querySelectorAll('[data-edit-task]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        this._openTaskModal(task);
+      });
+    });
+    // del
+    row.querySelectorAll('[data-del-task]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!confirm('Naozaj zmazať úlohu?')) return;
+        this._state.tasks = this._state.tasks.filter(t => t.id !== task.id);
         this._save(); this._renderPersonsGrid();
       });
     });
