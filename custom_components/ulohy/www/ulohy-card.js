@@ -1,7 +1,7 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.0
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.0
  * Každá osoba má vlastnú farebnú kartu.
- * Dáta ukladané cez /api/ulohy/data (Python backend, .storage)
+ * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
 
 // ─── Konštanty ───────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ const PALETTE = [
 const ROLES = ['Dieťa', 'Rodič', 'Člen'];
 
 // ─── Pomocné ─────────────────────────────────────────────────────────────────
-const uid  = () => Math.random().toString(36).slice(2, 10);
+const uid      = () => Math.random().toString(36).slice(2, 10);
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 function addDays(iso, n) {
@@ -34,16 +34,21 @@ function fmtDay(iso) {
   const d   = new Date(iso + 'T12:00:00');
   const DAY = ['Ne','Po','Ut','St','Št','Pi','So'];
   const MON = ['jan','feb','mar','apr','máj','jún','júl','aug','sep','okt','nov','dec'];
-  const t = todayISO();
+  const t   = todayISO();
   const prefix = iso === t ? 'Dnes, ' : iso === addDays(t,-1) ? 'Včera, ' : iso === addDays(t,1) ? 'Zajtra, ' : '';
   return `${prefix}${DAY[d.getDay()]} ${d.getDate()}. ${MON[d.getMonth()]}`;
 }
 
+function fmtDateTime(isoStr) {
+  const d   = new Date(isoStr);
+  const DAY = ['Ne','Po','Ut','St','Št','Pi','So'];
+  const MON = ['jan','feb','mar','apr','máj','jún','júl','aug','sep','okt','nov','dec'];
+  const pad = n => String(n).padStart(2,'0');
+  return `${DAY[d.getDay()]} ${d.getDate()}. ${MON[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function occurrencesOnDate(task, iso) {
-  if (!task.repeat || task.repeat === 'none') {
-    return task.date === iso;
-  }
-  // task.date je štart; iso musí byť >= štart
+  if (!task.repeat || task.repeat === 'none') return task.date === iso;
   if (iso < task.date) return false;
   if (task.repeat === 'daily') return true;
   if (task.repeat === 'weekly') {
@@ -51,17 +56,23 @@ function occurrencesOnDate(task, iso) {
     return (task.repeatDays || []).includes(dow);
   }
   if (task.repeat === 'monthly') {
-    return new Date(iso + 'T12:00:00').getDate() === new Date(task.date + 'T12:00:00').getDate();
+    return new Date(iso+'T12:00:00').getDate() === new Date(task.date+'T12:00:00').getDate();
   }
   if (task.repeat === 'yearly') {
-    const a = new Date(iso + 'T12:00:00'), b = new Date(task.date + 'T12:00:00');
-    return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
+    const a = new Date(iso+'T12:00:00'), b = new Date(task.date+'T12:00:00');
+    return a.getDate()===b.getDate() && a.getMonth()===b.getMonth();
   }
   return false;
 }
 
-function getOcc(task, iso)      { return (task.occurrences || {})[`${task.id}_${iso}`] || 'todo'; }
-function setOcc(task, iso, st)  { if (!task.occurrences) task.occurrences = {}; task.occurrences[`${task.id}_${iso}`] = st; }
+function getOcc(task, iso)             { return (task.occurrences||{})[`${task.id}_${iso}`] || 'todo'; }
+function setOcc(task, iso, st, doneBy) {
+  if (!task.occurrences) task.occurrences = {};
+  if (!task.doneBy) task.doneBy = {};
+  task.occurrences[`${task.id}_${iso}`] = st;
+  if (doneBy !== undefined) task.doneBy[`${task.id}_${iso}`] = doneBy;
+}
+function getDoneBy(task, iso) { return (task.doneBy||{})[`${task.id}_${iso}`] || []; }
 
 const REPEAT_LABEL = { none:'Jednorazová', daily:'Denne', weekly:'Týždenne', monthly:'Mesačne', yearly:'Ročne' };
 const DOW_LABEL    = ['Ne','Po','Ut','St','Št','Pi','So'];
@@ -157,8 +168,17 @@ const CSS = `
   font-size: 12px; font-weight: 600; padding: 3px 8px;
   border-radius: 20px; white-space: nowrap; flex-shrink: 0;
 }
+/* Body badge */
+.pts-badge {
+  font-size: 11px; font-weight: 700; padding: 3px 9px;
+  border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  cursor: pointer; transition: opacity .15s;
+  background: #E8F0FE; color: #1565C0; border: 1px solid rgba(21,101,192,.2);
+}
+.pts-badge.neg { background: #FCEBEB; color: #791F1F; border-color: rgba(121,31,31,.2); }
+.pts-badge:hover { opacity: .8; }
 
-/* ── Zoznam úloh v karte (sklad štýl) ── */
+/* ── Zoznam úloh v karte ── */
 .task-list { padding: 4px 0; }
 
 .task-row {
@@ -171,12 +191,9 @@ const CSS = `
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; cursor: pointer; user-select: none;
 }
-.task-dot {
-  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-}
+.task-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .dot-todo    { background: #EF9F27; }
 .dot-done    { background: #639922; }
-.dot-checked { background: #1D9E75; }
 .dot-overdue { background: #E24B4A; }
 
 .task-name {
@@ -188,13 +205,18 @@ const CSS = `
   background: var(--sf); color: var(--mu);
   border: 1px solid var(--bd); white-space: nowrap; flex-shrink: 0;
 }
+.task-ptag {
+  font-size: 10px; padding: 2px 5px; border-radius: 8px;
+  background: #E8F0FE; color: #1565C0;
+  border: 1px solid rgba(21,101,192,.2); white-space: nowrap; flex-shrink: 0;
+  font-weight: 600;
+}
 .task-badge {
   font-size: 11px; font-weight: 600; padding: 3px 8px;
   border-radius: 10px; white-space: nowrap; flex-shrink: 0;
 }
 .badge-todo    { background: #FAEEDA; color: #633806; }
 .badge-done    { background: #EAF3DE; color: #27500A; }
-.badge-checked { background: #E1F5EE; color: #085041; }
 .badge-overdue { background: #FCEBEB; color: #791F1F; }
 
 .task-chev { font-size: 11px; color: var(--mu); transition: transform .2s; flex-shrink: 0; }
@@ -204,10 +226,44 @@ const CSS = `
 .task-detail {
   display: none; padding: 8px 12px 10px;
   background: var(--sf); border-top: 1px solid var(--bd);
-  flex-wrap: wrap; gap: 6px; align-items: center;
+  flex-wrap: wrap; gap: 6px; align-items: flex-start;
 }
 .task-row.open .task-detail { display: flex; }
 .task-note { font-size: 12px; color: var(--mu); flex-basis: 100%; margin-bottom: 2px; }
+
+/* Výber kto urobil */
+.who-lbl {
+  font-size: 11px; font-weight: 600; color: var(--mu);
+  text-transform: uppercase; letter-spacing: .05em;
+  flex-basis: 100%; margin-bottom: 2px;
+}
+.who-grid { display: flex; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
+.who-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 9px; border: 1.5px solid var(--bd);
+  border-radius: 20px; background: var(--bg);
+  cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--tx); font-family: inherit; transition: border-color .15s, background .15s;
+}
+.who-btn.sel { border-color: var(--ac); background: #E8F0FE; color: #1565C0; }
+.who-av {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--bd); display: flex; align-items: center;
+  justify-content: center; font-size: 9px; font-weight: 700; overflow: hidden;
+}
+.who-av img { width: 100%; height: 100%; object-fit: cover; }
+.confirm-btn {
+  font-size: 12px; font-weight: 600; padding: 6px 11px;
+  border-radius: var(--rs); border: none; cursor: pointer;
+  font-family: inherit; background: #EAF3DE; color: #27500A;
+  transition: opacity .15s; margin-top: 2px;
+}
+.confirm-btn:disabled { opacity: .35; cursor: not-allowed; }
+.confirm-btn:not(:disabled):hover { opacity: .85; }
+.done-info {
+  font-size: 11px; color: #27500A; background: #EAF3DE;
+  padding: 3px 8px; border-radius: var(--rs); flex-basis: 100%;
+}
 
 .act-btn {
   font-size: 12px; font-weight: 600; padding: 6px 11px;
@@ -215,8 +271,6 @@ const CSS = `
   font-family: inherit; transition: opacity .15s;
 }
 .act-btn:hover { opacity: .85; }
-.btn-done    { background: #EAF3DE; color: #27500A; }
-.btn-checked { background: #E1F5EE; color: #085041; }
 .btn-revert  { background: var(--sf); color: var(--mu); border: 1px solid var(--bd); }
 .admin-acts  { margin-left: auto; display: flex; gap: 4px; }
 .edit-ic, .del-ic {
@@ -226,6 +280,31 @@ const CSS = `
 }
 .edit-ic:hover { background: #FAEEDA; color: #633806; }
 .del-ic:hover  { background: #FCEBEB; color: #791F1F; }
+
+/* ── Log transakcií ── */
+.log-wrap { border-top: 1px solid var(--bd); }
+.log-title {
+  font-size: 11px; font-weight: 600; color: var(--mu);
+  text-transform: uppercase; letter-spacing: .06em; padding: 7px 12px 3px;
+}
+.log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.log-table td { padding: 3px 12px; border-bottom: 1px solid var(--bd); vertical-align: top; }
+.log-table tr:last-child td { border-bottom: none; }
+.log-pos { color: #27500A; font-weight: 700; }
+.log-neg { color: #791F1F; font-weight: 700; }
+.log-bal { font-weight: 600; }
+.log-ts  { color: var(--mu); white-space: nowrap; }
+
+/* ── Stály zoznam sekcia ── */
+.perm-section {
+  padding: 12px 16px 16px;
+  border-top: 2px solid var(--bd);
+  margin-top: 4px;
+}
+.perm-title {
+  font-size: 13px; font-weight: 600; color: var(--tx);
+  margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
 
 /* ── Empty ── */
 .empty { text-align: center; padding: 24px 12px; color: var(--mu); font-size: 13px; }
@@ -322,7 +401,23 @@ const CSS = `
   border: 1px solid var(--bd); border-radius: var(--rs); margin-bottom: 6px;
 }
 .person-chip-name { flex: 1; font-size: 13px; color: var(--tx); }
-.person-chip-role { font-size: 11px; color: var(--mu); }
+.person-chip-pts {
+  font-size: 11px; font-weight: 700; color: #1565C0;
+  background: #E8F0FE; padding: 2px 7px; border-radius: 10px;
+}
+.pts-adj { display: flex; align-items: center; gap: 4px; }
+.pts-btn {
+  width: 24px; height: 24px; border: 1px solid var(--bd); border-radius: var(--rs);
+  background: var(--sf); cursor: pointer; font-size: 13px; font-weight: 700;
+  color: var(--tx); font-family: inherit; display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.pts-btn:hover { background: var(--bd); }
+.pts-inp {
+  width: 44px; text-align: center; padding: 3px 4px;
+  border: 1px solid var(--bd); border-radius: var(--rs);
+  background: var(--bg); color: var(--tx); font-size: 12px; font-family: inherit;
+}
 .adm-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 0; border-bottom: 1px solid var(--bd);
@@ -337,18 +432,19 @@ class UlohyCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._hass        = null;
-    this._state       = null;
-    this._loaded      = false;
-    this._viewDate    = todayISO();
-    this._adminOn     = false;
-    this._pinInput    = '';
-    this._pinMode     = '';
-    this._pinFirst    = '';
-    this._weekSel     = [];
-    this._pollTimer   = null;
-    this._saving      = '';
+    this._hass      = null;
+    this._state     = null;
+    this._loaded    = false;
+    this._viewDate  = todayISO();
+    this._adminOn   = false;
+    this._pinInput  = '';
+    this._pinMode   = '';
+    this._pinFirst  = '';
+    this._weekSel   = [];
+    this._pollTimer = null;
+    this._saving    = '';
     this._showChecked = false;
+    this._whoSel    = {};   // taskKey → Set of personIds
   }
 
   set hass(h) {
@@ -362,15 +458,20 @@ class UlohyCard extends HTMLElement {
     if (this._pollTimer) clearInterval(this._pollTimer);
   }
 
-  // ── Storage ─────────────────────────────────────────────────────────────────
+  // ── Storage ──────────────────────────────────────────────────────────────
   async _load() {
     try {
       const r = await this._hass.callApi('GET', 'ulohy/data');
       if (r && typeof r === 'object') this._state = r;
     } catch(e) { console.warn('[ulohy] load error', e); }
     if (!this._state) this._state = this._empty();
+    // migrácia
+    if (!this._state.permanentTasks) this._state.permanentTasks = [];
+    if (!this._state.pointsLog) this._state.pointsLog = {};
+    for (const p of this._state.persons) {
+      if (p.points === undefined) p.points = 0;
+    }
     this._render();
-    // Auto-sync
     if (this._pollTimer) clearInterval(this._pollTimer);
     this._pollTimer = setInterval(() => this._poll(), POLL_MS);
   }
@@ -378,10 +479,7 @@ class UlohyCard extends HTMLElement {
   async _poll() {
     try {
       const r = await this._hass.callApi('GET', 'ulohy/data');
-      if (r && typeof r === 'object') {
-        this._state = r;
-        this._renderPersonsGrid();
-      }
+      if (r && typeof r === 'object') { this._state = r; this._renderPersonsGrid(); }
     } catch(e) {}
   }
 
@@ -401,10 +499,50 @@ class UlohyCard extends HTMLElement {
   }
 
   _empty() {
-    return { persons: [], tasks: [], adminPin: null, settings: { showChecked: false } };
+    return { persons: [], tasks: [], permanentTasks: [], pointsLog: {}, adminPin: null, settings: { showChecked: false } };
   }
 
-  // ── Render – shell ───────────────────────────────────────────────────────────
+  // ── Body & log ────────────────────────────────────────────────────────────
+  _logEntry(pid, desc, delta, bal) {
+    if (!this._state.pointsLog) this._state.pointsLog = {};
+    if (!this._state.pointsLog[pid]) this._state.pointsLog[pid] = [];
+    this._state.pointsLog[pid].unshift({
+      ts: new Date().toISOString(),
+      desc, delta: Math.round(delta*10)/10, bal: Math.round(bal*10)/10
+    });
+    if (this._state.pointsLog[pid].length > 200)
+      this._state.pointsLog[pid] = this._state.pointsLog[pid].slice(0, 200);
+  }
+
+  _addPoints(personIds, pts, taskName) {
+    if (!personIds || !personIds.length || !pts) return;
+    const share = pts / personIds.length;
+    for (const pid of personIds) {
+      const p = this._state.persons.find(x => x.id === pid);
+      if (p) { p.points = Math.round(((p.points||0) + share)*10)/10; this._logEntry(pid, taskName||'Úloha', +share, p.points); }
+    }
+  }
+
+  _removePoints(personIds, pts, taskName) {
+    if (!personIds || !personIds.length || !pts) return;
+    const share = pts / personIds.length;
+    for (const pid of personIds) {
+      const p = this._state.persons.find(x => x.id === pid);
+      if (p) { p.points = Math.round(((p.points||0) - share)*10)/10; this._logEntry(pid, 'Vrátené: '+(taskName||'Úloha'), -share, p.points); }
+    }
+  }
+
+  _spendPoints(person, amount) {
+    person.points = Math.round(((person.points||0) - amount)*10)/10;
+    this._logEntry(person.id, 'Využité body', -amount, person.points);
+  }
+
+  _adminAdjust(person, delta) {
+    person.points = Math.round(((person.points||0) + delta)*10)/10;
+    this._logEntry(person.id, delta > 0 ? 'Admin: +'+delta+' b' : 'Admin: '+delta+' b', delta, person.points);
+  }
+
+  // ── Render – shell ────────────────────────────────────────────────────────
   _render() {
     const s = this.shadowRoot;
     if (!s.querySelector('.wrap')) {
@@ -414,7 +552,8 @@ class UlohyCard extends HTMLElement {
             <span class="hdr-title">📋 Úlohy</span>
             <div class="hdr-acts">
               <button class="icon-btn" id="btn-add-task" title="Nová úloha">＋</button>
-              <button class="icon-btn${this._showChecked?' on':''}" id="btn-toggle-done" title="Zobraziť skontrolované">✔</button>
+              <button class="icon-btn${this._showChecked?' on':''}" id="btn-toggle-done" title="Zobraziť dokončené">✔</button>
+              <button class="icon-btn" id="btn-perm" title="Stály zoznam">📌</button>
               <button class="icon-btn" id="btn-admin" title="Admin">⚙</button>
             </div>
           </div>
@@ -426,6 +565,7 @@ class UlohyCard extends HTMLElement {
             <button class="nav-btn" id="next-day">›</button>
           </div>
           <div class="persons-grid" id="pgrid"></div>
+          <div class="perm-section" id="perm-section" style="display:none"></div>
         </ha-card>
         <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>`;
 
@@ -443,26 +583,33 @@ class UlohyCard extends HTMLElement {
         this._showChecked = !this._showChecked;
         s.querySelector('#btn-toggle-done').classList.toggle('on', this._showChecked);
         this._renderPersonsGrid();
+        this._renderPermSection();
+      });
+      s.querySelector('#btn-perm').addEventListener('click', () => {
+        const sec = s.querySelector('#perm-section');
+        const visible = sec.style.display === 'none';
+        sec.style.display = visible ? '' : 'none';
+        s.querySelector('#btn-perm').classList.toggle('on', visible);
+        if (visible) this._renderPermSection();
       });
       s.querySelector('#btn-admin').addEventListener('click', () => this._openAdminModal());
       s.querySelector('#overlay').addEventListener('click', e => {
         if (e.target === s.querySelector('#overlay')) this._closeModal();
       });
     }
-
     this._renderPersonsGrid();
   }
 
-  // ── Osobné karty ────────────────────────────────────────────────────────────
+  // ── Osobné karty ──────────────────────────────────────────────────────────
   _renderPersonsGrid() {
-    const grid  = this.shadowRoot.querySelector('#pgrid');
-    const dlbl  = this.shadowRoot.querySelector('#date-lbl');
+    const grid    = this.shadowRoot.querySelector('#pgrid');
+    const dlbl    = this.shadowRoot.querySelector('#date-lbl');
     const gotoday = this.shadowRoot.querySelector('#go-today');
     if (!grid) return;
 
-    const iso   = this._viewDate;
+    const iso     = this._viewDate;
     const isToday = iso === todayISO();
-    if (dlbl)   dlbl.textContent  = fmtDay(iso);
+    if (dlbl)    dlbl.textContent = fmtDay(iso);
     if (gotoday) gotoday.style.display = isToday ? 'none' : '';
 
     if (!this._state || this._state.persons.length === 0) {
@@ -471,16 +618,14 @@ class UlohyCard extends HTMLElement {
     }
 
     grid.innerHTML = this._state.persons.map((p, pi) => {
-      const pal   = PALETTE[p.colorIdx !== undefined ? p.colorIdx % PALETTE.length : pi % PALETTE.length];
-      const tasks = this._state.tasks.filter(t => t.personId === p.id && occurrencesOnDate(t, iso));
-      const visible = tasks.filter(t => this._showChecked || getOcc(t, iso) !== 'checked');
-      const done  = tasks.filter(t => getOcc(t, iso) !== 'todo').length;
+      const pal    = PALETTE[p.colorIdx !== undefined ? p.colorIdx % PALETTE.length : pi % PALETTE.length];
+      const tasks  = this._state.tasks.filter(t => t.personId === p.id && occurrencesOnDate(t, iso));
+      const visible = tasks.filter(t => this._showChecked || getOcc(t, iso) !== 'done');
+      const done   = tasks.filter(t => getOcc(t, iso) !== 'todo').length;
+      const pts    = p.points || 0;
 
-      const avatarHTML = p.avatar
-        ? `<img src="${p.avatar}" alt="">`
-        : this._initials(p.name);
-
-      const progStyle = done === tasks.length && tasks.length > 0
+      const avatarHTML = p.avatar ? `<img src="${p.avatar}" alt="">` : this._initials(p.name);
+      const progStyle  = done === tasks.length && tasks.length > 0
         ? `background:#EAF3DE;color:#27500A`
         : `background:${pal.bg};color:${pal.text}`;
 
@@ -494,34 +639,146 @@ class UlohyCard extends HTMLElement {
             <div class="pcard-avatar" style="background:${pal.border};color:#fff">${avatarHTML}</div>
             <div class="pcard-info">
               <div class="pcard-name" style="color:${pal.text}">${p.name}</div>
-              <div class="pcard-meta">${p.role || 'Člen'} · ${done}/${tasks.length} dnes</div>
+              <div class="pcard-meta">${p.role||'Člen'} · ${done}/${tasks.length} dnes</div>
             </div>
+            <span class="pts-badge${pts < 0 ? ' neg' : ''}" data-spend="${p.id}" title="Klikni pre využitie bodov">⭐ ${pts} b</span>
             <span class="pcard-prog" style="${progStyle}">${done}/${tasks.length}</span>
           </div>
-          <div class="task-list">${taskRows}</div>
+          <div class="task-list" id="tlist-${p.id}">${taskRows}</div>
           ${this._adminOn ? `<div style="padding:6px 10px;border-top:1px solid var(--bd)">
             <button class="add-btn" data-add-person="${p.id}">＋ Pridať úlohu pre ${p.name}</button>
           </div>` : ''}
+          ${this._renderLogHTML(p)}
         </div>`;
     }).join('');
 
-    // Event listenery
+    this._attachGridListeners(grid);
+  }
+
+  _renderLogHTML(person) {
+    const log = (this._state.pointsLog||{})[person.id] || [];
+    if (log.length === 0) return '';
+    let html = `<div class="log-wrap"><div class="log-title">História bodov</div>
+      <table class="log-table"><tbody>`;
+    for (const e of log.slice(0, 15)) {
+      const cls  = e.delta >= 0 ? 'log-pos' : 'log-neg';
+      const sign = e.delta >= 0 ? '+' : '';
+      html += `<tr>
+        <td class="log-ts">${fmtDateTime(e.ts)}</td>
+        <td>${e.desc}</td>
+        <td class="${cls}">${sign}${e.delta}</td>
+        <td class="log-bal">${e.bal}</td>
+      </tr>`;
+    }
+    if (log.length > 15) html += `<tr><td colspan="4" style="color:var(--mu);text-align:center;padding:4px 12px">... a ${log.length-15} ďalších</td></tr>`;
+    return html + `</tbody></table></div>`;
+  }
+
+  _taskRowHTML(task, iso, isToday) {
+    const raw     = getOcc(task, iso);
+    const overdue = raw === 'todo' && iso < todayISO();
+    const stDisp  = overdue ? 'overdue' : raw;
+
+    const badges  = { todo:'Treba spraviť', done:'Urobená', overdue:'Nesplnená' };
+    const dotCls  = { todo:'dot-todo', done:'dot-done', overdue:'dot-overdue' };
+    const badgeCls= { todo:'badge-todo', done:'badge-done', overdue:'badge-overdue' };
+
+    const rtag = task.repeat && task.repeat !== 'none'
+      ? `<span class="task-rtag">${REPEAT_LABEL[task.repeat]||task.repeat}</span>` : '';
+    const ptag = task.points
+      ? `<span class="task-ptag">⭐ ${task.points}b</span>` : '';
+
+    const detail = this._taskDetailHTML(task, iso, raw, stDisp);
+
+    return `
+      <div class="task-row" data-tid="${task.id}" data-date="${iso}">
+        <div class="task-main">
+          <span class="task-dot ${dotCls[stDisp]||'dot-todo'}"></span>
+          <span class="task-name">${task.name}</span>
+          ${rtag}${ptag}
+          <span class="task-badge ${badgeCls[stDisp]||'badge-todo'}">${badges[stDisp]||stDisp}</span>
+          <span class="task-chev">›</span>
+        </div>
+        <div class="task-detail">${detail}</div>
+      </div>`;
+  }
+
+  _taskDetailHTML(task, iso, raw, stDisp) {
+    const persons = this._state.persons;
+    const taskKey = task.id + '_' + iso;
+    const selSet  = this._whoSel[taskKey] || new Set();
+    const doneBy  = getDoneBy(task, iso);
+    let html = '';
+
+    if (task.note) html += `<span class="task-note">${task.note}</span>`;
+
+    if (raw === 'todo') {
+      if (persons.length > 0) {
+        html += `<span class="who-lbl">Kto úlohu urobil?</span><div class="who-grid">`;
+        for (const p of persons) {
+          const av = p.avatar ? `<img src="${p.avatar}">` : this._initials(p.name);
+          html += `<button class="who-btn${selSet.has(p.id)?' sel':''}" data-who="${taskKey}" data-pid="${p.id}">
+            <span class="who-av">${av}</span>${p.name}
+          </button>`;
+        }
+        html += `</div>`;
+      }
+      const pts = task.points || 0;
+      const cnt = selSet.size;
+      const hint = pts > 0 && cnt > 0 ? ' (+' + Math.round(pts/cnt*10)/10 + 'b/os.)' : '';
+      html += `<button class="confirm-btn" data-confirm="${task.id}" data-date="${iso}" ${cnt > 0 ? '' : 'disabled'}>✓ Potvrdiť urobené${hint}</button>`;
+    } else if (raw === 'done') {
+      const names = doneBy.map(id => persons.find(p=>p.id===id)?.name || '?').join(', ');
+      if (names) html += `<span class="done-info">✓ Urobili: ${names}</span>`;
+      html += `<button class="act-btn btn-revert" data-action="todo" data-task-id="${task.id}" data-date="${iso}">Vrátiť</button>`;
+    }
+
+    if (this._adminOn) {
+      html += `<div class="admin-acts">
+        <button class="edit-ic" data-edit-task="${task.id}" title="Upraviť">✎</button>
+        <button class="del-ic" data-del-task="${task.id}" title="Zmazať">✕</button>
+      </div>`;
+    }
+    return html;
+  }
+
+  _attachGridListeners(grid) {
+    // toggle open/close
     grid.querySelectorAll('.task-main').forEach(el => {
       el.addEventListener('click', () => {
-        el.closest('.task-row').classList.toggle('open');
+        const row = el.closest('.task-row');
+        row.classList.toggle('open');
+        if (row.classList.contains('open')) {
+          const task = this._state.tasks.find(t => t.id === row.dataset.tid);
+          const iso  = row.dataset.date;
+          if (task) {
+            row.querySelector('.task-detail').innerHTML = this._taskDetailHTML(task, iso, getOcc(task, iso), getOcc(task,iso)==='todo'&&iso<todayISO()?'overdue':getOcc(task,iso));
+            this._attachDetailListeners(row, task, iso);
+          }
+        }
       });
     });
+    // revert
     grid.querySelectorAll('[data-action]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
-        const { taskId, date, action } = btn.dataset;
-        const task = this._state.tasks.find(t => t.id === taskId);
+        const task = this._state.tasks.find(t => t.id === btn.dataset.taskId);
         if (!task) return;
-        setOcc(task, date, action);
-        this._save();
-        this._renderPersonsGrid();
+        const iso = btn.dataset.date;
+        if (btn.dataset.action === 'todo') {
+          const prev = getDoneBy(task, iso);
+          if (prev.length) this._removePoints(prev, task.points||0, task.name);
+        }
+        setOcc(task, iso, btn.dataset.action, []);
+        this._save(); this._renderPersonsGrid();
       });
     });
+    // who-btn + confirm
+    grid.querySelectorAll('.task-row').forEach(row => {
+      const task = this._state.tasks.find(t => t.id === row.dataset.tid);
+      if (task) this._attachDetailListeners(row, task, row.dataset.date);
+    });
+    // edit/del
     grid.querySelectorAll('[data-edit-task]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -538,58 +795,219 @@ class UlohyCard extends HTMLElement {
       });
     });
     grid.querySelectorAll('[data-add-person]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pid = btn.dataset.addPerson;
-        this._openTaskModal(null, pid);
+      btn.addEventListener('click', () => this._openTaskModal(null, btn.dataset.addPerson));
+    });
+    // pts spend badge
+    grid.querySelectorAll('[data-spend]').forEach(badge => {
+      badge.addEventListener('click', () => {
+        const p = this._state.persons.find(x => x.id === badge.dataset.spend);
+        if (p) this._openSpendModal(p);
       });
     });
   }
 
-  _taskRowHTML(task, iso, isToday) {
-    const raw = getOcc(task, iso);
-    const isOverdue = isToday && iso < todayISO();
-    const st  = (raw === 'todo' && iso < todayISO() && isToday) ? 'overdue' : raw;
-    const stDisplay = st === 'overdue' ? 'overdue' : raw;
-
-    const badges = { todo:'Treba spraviť', done:'Urobená', checked:'Skontrolovaná', overdue:'Nesplnená' };
-    const dotCls = { todo:'dot-todo', done:'dot-done', checked:'dot-checked', overdue:'dot-overdue' };
-    const badgeCls = { todo:'badge-todo', done:'badge-done', checked:'badge-checked', overdue:'badge-overdue' };
-
-    const rtag = task.repeat && task.repeat !== 'none'
-      ? `<span class="task-rtag">${REPEAT_LABEL[task.repeat] || task.repeat}</span>` : '';
-
-    let detail = '';
-    if (task.note) detail += `<span class="task-note">${task.note}</span>`;
-    if (raw === 'todo')    detail += `<button class="act-btn btn-done" data-action="done" data-task-id="${task.id}" data-date="${iso}">✓ Označiť ako urobená</button>`;
-    if (raw === 'done')    detail += `<button class="act-btn btn-checked" data-action="checked" data-task-id="${task.id}" data-date="${iso}">✓✓ Označiť ako skontrolovaná</button>`;
-    if (raw !== 'todo')    detail += `<button class="act-btn btn-revert" data-action="todo" data-task-id="${task.id}" data-date="${iso}">Vrátiť</button>`;
-    if (this._adminOn) {
-      detail += `<div class="admin-acts">
-        <button class="edit-ic" data-edit-task="${task.id}" title="Upraviť">✎</button>
-        <button class="del-ic" data-del-task="${task.id}" title="Zmazať">✕</button>
-      </div>`;
-    }
-
-    return `
-      <div class="task-row" data-tid="${task.id}">
-        <div class="task-main">
-          <span class="task-dot ${dotCls[stDisplay] || 'dot-todo'}"></span>
-          <span class="task-name">${task.name}</span>
-          ${rtag}
-          <span class="task-badge ${badgeCls[stDisplay] || 'badge-todo'}">${badges[stDisplay] || stDisplay}</span>
-          <span class="task-chev">›</span>
-        </div>
-        <div class="task-detail">${detail}</div>
-      </div>`;
+  _attachDetailListeners(row, task, iso) {
+    const taskKey = task.id + '_' + iso;
+    row.querySelectorAll('[data-who]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const pid = btn.dataset.pid;
+        if (!this._whoSel[taskKey]) this._whoSel[taskKey] = new Set();
+        const sel = this._whoSel[taskKey];
+        if (sel.has(pid)) sel.delete(pid); else sel.add(pid);
+        btn.classList.toggle('sel', sel.has(pid));
+        const cb = row.querySelector('[data-confirm]');
+        if (cb) {
+          const pts = task.points||0; const cnt = sel.size;
+          const hint = pts > 0 && cnt > 0 ? ' (+'+Math.round(pts/cnt*10)/10+'b/os.)' : '';
+          cb.disabled = cnt === 0;
+          cb.textContent = '✓ Potvrdiť urobené' + hint;
+        }
+      });
+    });
+    row.querySelectorAll('[data-confirm]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const doneBy = [...(this._whoSel[taskKey] || new Set())];
+        setOcc(task, iso, 'done', doneBy);
+        if (doneBy.length) this._addPoints(doneBy, task.points||0, task.name);
+        delete this._whoSel[taskKey];
+        this._save(); this._renderPersonsGrid();
+      });
+    });
   }
 
   _initials(name) {
-    return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+    return name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
   }
 
-  // ── Modal: Úloha ─────────────────────────────────────────────────────────────
+  // ── Stály zoznam ─────────────────────────────────────────────────────────
+  _renderPermSection() {
+    const sec = this.shadowRoot.querySelector('#perm-section');
+    if (!sec || sec.style.display === 'none') return;
+    const tasks = this._state.permanentTasks || [];
+    const vis   = tasks.filter(pt => this._showChecked || !pt.done);
+    let html = `<div class="perm-title">📌 Stály zoznam</div>`;
+    if (vis.length === 0) {
+      html += `<div class="empty" style="padding:16px 0">Žiadne stále úlohy</div>`;
+    } else {
+      vis.forEach(pt => { html += this._permRowHTML(pt); });
+    }
+    html += `<button class="add-btn" id="add-perm-btn">＋ Pridať stálu úlohu</button>`;
+    sec.innerHTML = html;
+    sec.querySelector('#add-perm-btn').addEventListener('click', () => this._openPermModal(null));
+    this._attachPermListeners(sec);
+  }
+
+  _permRowHTML(pt) {
+    const isDone = pt.done || false;
+    const ptag   = pt.points ? `<span class="task-ptag">⭐ ${pt.points}b</span>` : '';
+    return `
+      <div class="task-row" data-perm-id="${pt.id}">
+        <div class="task-main">
+          <span class="task-dot ${isDone?'dot-done':'dot-todo'}"></span>
+          <span class="task-name">${pt.name}</span>
+          ${ptag}
+          <span class="task-badge ${isDone?'badge-done':'badge-todo'}">${isDone?'Hotovo':'Čaká'}</span>
+          <span class="task-chev">›</span>
+        </div>
+        <div class="task-detail">${this._permDetailHTML(pt)}</div>
+      </div>`;
+  }
+
+  _permDetailHTML(pt) {
+    const persons = this._state.persons;
+    const taskKey = 'perm_' + pt.id;
+    const selSet  = this._whoSel[taskKey] || new Set();
+    let html = '';
+    if (pt.note) html += `<span class="task-note">${pt.note}</span>`;
+    if (!pt.done) {
+      if (persons.length > 0) {
+        html += `<span class="who-lbl">Kto úlohu urobil?</span><div class="who-grid">`;
+        for (const p of persons) {
+          const av = p.avatar ? `<img src="${p.avatar}">` : this._initials(p.name);
+          html += `<button class="who-btn${selSet.has(p.id)?' sel':''}" data-who-perm="${taskKey}" data-pid="${p.id}">
+            <span class="who-av">${av}</span>${p.name}
+          </button>`;
+        }
+        html += `</div>`;
+      }
+      const pts = pt.points||0; const cnt = selSet.size;
+      const hint = pts > 0 && cnt > 0 ? ' (+'+Math.round(pts/cnt*10)/10+'b/os.)' : '';
+      html += `<button class="confirm-btn" data-confirm-perm="${pt.id}" ${cnt>0?'':'disabled'}>✓ Potvrdiť urobené${hint}</button>`;
+    } else {
+      const names = (pt.doneBy||[]).map(id => persons.find(p=>p.id===id)?.name||'?').join(', ');
+      if (names) html += `<span class="done-info">✓ Urobili: ${names}</span>`;
+      html += `<button class="act-btn btn-revert" data-revert-perm="${pt.id}">Vrátiť</button>`;
+    }
+    if (this._adminOn) {
+      html += `<div class="admin-acts">
+        <button class="edit-ic" data-edit-perm="${pt.id}">✎</button>
+        <button class="del-ic" data-del-perm="${pt.id}">✕</button>
+      </div>`;
+    }
+    return html;
+  }
+
+  _attachPermListeners(container) {
+    container.querySelectorAll('[data-perm-id]').forEach(row => {
+      row.querySelector('.task-main').addEventListener('click', () => {
+        row.classList.toggle('open');
+        if (row.classList.contains('open')) {
+          const pt = this._state.permanentTasks.find(x => x.id === row.dataset.permId);
+          if (pt) { row.querySelector('.task-detail').innerHTML = this._permDetailHTML(pt); this._attachPermDetail(row, pt); }
+        }
+      });
+      const pt = this._state.permanentTasks.find(x => x.id === row.dataset.permId);
+      if (pt) this._attachPermDetail(row, pt);
+    });
+  }
+
+  _attachPermDetail(row, pt) {
+    const taskKey = 'perm_' + pt.id;
+    row.querySelectorAll('[data-who-perm]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const pid = btn.dataset.pid;
+        if (!this._whoSel[taskKey]) this._whoSel[taskKey] = new Set();
+        const sel = this._whoSel[taskKey];
+        if (sel.has(pid)) sel.delete(pid); else sel.add(pid);
+        btn.classList.toggle('sel', sel.has(pid));
+        const cb = row.querySelector('[data-confirm-perm]');
+        if (cb) {
+          const pts=pt.points||0; const cnt=sel.size;
+          const hint = pts>0&&cnt>0 ? ' (+'+Math.round(pts/cnt*10)/10+'b/os.)' : '';
+          cb.disabled=cnt===0; cb.textContent='✓ Potvrdiť urobené'+hint;
+        }
+      });
+    });
+    row.querySelectorAll('[data-confirm-perm]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const doneBy = [...(this._whoSel[taskKey]||new Set())];
+        pt.done=true; pt.doneBy=doneBy;
+        if (doneBy.length) this._addPoints(doneBy, pt.points||0, pt.name);
+        delete this._whoSel[taskKey];
+        this._save(); this._renderPermSection();
+      });
+    });
+    row.querySelectorAll('[data-revert-perm]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (pt.doneBy?.length) this._removePoints(pt.doneBy, pt.points||0, pt.name);
+        pt.done=false; pt.doneBy=[];
+        this._save(); this._renderPermSection();
+      });
+    });
+    row.querySelectorAll('[data-edit-perm]').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); this._openPermModal(pt); });
+    });
+    row.querySelectorAll('[data-del-perm]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!confirm('Zmazať stálu úlohu?')) return;
+        this._state.permanentTasks = this._state.permanentTasks.filter(x => x.id !== pt.id);
+        this._save(); this._renderPermSection();
+      });
+    });
+  }
+
+  // ── Spend modal ───────────────────────────────────────────────────────────
+  _openSpendModal(person) {
+    document.body.querySelector('#ulohy-spend-ov')?.remove();
+    const ov = document.createElement('div');
+    ov.id = 'ulohy-spend-ov';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;font-family:system-ui,sans-serif;';
+    ov.innerHTML = `
+      <div style="background:#fff;border-radius:12px;padding:24px;width:min(300px,90vw);box-shadow:0 8px 32px rgba(0,0,0,.22);">
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:#212121;">Ahoj, ${person.name}!</div>
+        <div style="font-size:12px;color:#757575;margin-bottom:16px;">Máš <strong>${person.points||0} bodov</strong>. Koľko bodov chceš využiť?</div>
+        <input id="_sa" type="number" min="1" step="1" placeholder="Počet bodov"
+          style="width:100%;padding:10px;font-size:20px;font-weight:700;text-align:center;border:2px solid #1976d2;border-radius:8px;outline:none;color:#212121;box-sizing:border-box;margin-bottom:16px;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button id="_sc" style="padding:8px 16px;border:1px solid #ccc;border-radius:8px;background:none;cursor:pointer;font-size:13px;font-family:inherit;">Zrušiť</button>
+          <button id="_so" style="padding:8px 16px;border:none;border-radius:8px;background:#1976d2;color:#fff;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;">Využiť</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    const inp = ov.querySelector('#_sa'); inp.focus();
+    ov.querySelector('#_sc').addEventListener('click', () => ov.remove());
+    ov.addEventListener('click', e => { if (e.target===ov) ov.remove(); });
+    ov.querySelector('#_so').addEventListener('click', () => {
+      const amount = parseFloat(inp.value);
+      if (!amount || amount <= 0) { inp.style.borderColor='#E24B4A'; return; }
+      this._spendPoints(person, amount);
+      this._save(); ov.remove(); this._renderPersonsGrid();
+    });
+    inp.addEventListener('keydown', e => {
+      if (e.key==='Enter') ov.querySelector('#_so').click();
+      if (e.key==='Escape') ov.remove();
+    });
+  }
+
+  // ── Modal: Úloha ──────────────────────────────────────────────────────────
   _openTaskModal(task, defaultPersonId) {
-    const isEdit = !!task;
+    const isEdit  = !!task;
     const persons = this._state.persons;
     this._weekSel = task?.repeatDays ? [...task.repeatDays] : [];
     const selPid  = task?.personId || defaultPersonId || persons[0]?.id || '';
@@ -599,16 +1017,18 @@ class UlohyCard extends HTMLElement {
     modal.innerHTML = `
       <div class="modal-title">${isEdit ? 'Upraviť úlohu' : 'Nová úloha'}</div>
       <div class="fg"><label class="fl">Názov</label>
-        <input class="fi" id="t-name" value="${task?.name || ''}" placeholder="Názov úlohy"></div>
+        <input class="fi" id="t-name" value="${task?.name||''}" placeholder="Názov úlohy"></div>
       <div class="fg"><label class="fl">Poznámka</label>
-        <textarea class="fta" id="t-note">${task?.note || ''}</textarea></div>
+        <textarea class="fta" id="t-note">${task?.note||''}</textarea></div>
+      <div class="fg"><label class="fl">Bodová hodnota (0 = bez bodov)</label>
+        <input class="fi" type="number" min="0" step="1" id="t-points" value="${task?.points||0}" style="width:100px"></div>
       <div class="fg"><label class="fl">Osoba</label>
         <select class="fsel" id="t-person">
-          ${persons.map(p => `<option value="${p.id}"${p.id===selPid?' selected':''}>${p.name}</option>`).join('')}
+          ${persons.map(p=>`<option value="${p.id}"${p.id===selPid?' selected':''}>${p.name}</option>`).join('')}
           ${persons.length===0?'<option value="">— žiadna —</option>':''}
         </select></div>
       <div class="fg"><label class="fl">Dátum začiatku</label>
-        <input class="fi" type="date" id="t-date" value="${task?.date || this._viewDate}"></div>
+        <input class="fi" type="date" id="t-date" value="${task?.date||this._viewDate}"></div>
       <div class="fg"><label class="fl">Opakovanie</label>
         <select class="fsel" id="t-repeat">
           ${Object.entries(REPEAT_LABEL).map(([v,l])=>`<option value="${v}"${v===selRep?' selected':''}>${l}</option>`).join('')}
@@ -626,11 +1046,11 @@ class UlohyCard extends HTMLElement {
       </div>`;
 
     modal.querySelector('#t-repeat').addEventListener('change', e => {
-      modal.querySelector('#wd-wrap').style.display = e.target.value === 'weekly' ? '' : 'none';
+      modal.querySelector('#wd-wrap').style.display = e.target.value==='weekly' ? '' : 'none';
     });
     modal.querySelectorAll('.wdbtn').forEach(b => b.addEventListener('click', () => {
       const d = +b.dataset.dow;
-      if (this._weekSel.includes(d)) { this._weekSel = this._weekSel.filter(x=>x!==d); b.classList.remove('sel'); }
+      if (this._weekSel.includes(d)) { this._weekSel=this._weekSel.filter(x=>x!==d); b.classList.remove('sel'); }
       else { this._weekSel.push(d); b.classList.add('sel'); }
     }));
     modal.querySelector('#t-cancel').addEventListener('click', () => this._closeModal());
@@ -640,42 +1060,70 @@ class UlohyCard extends HTMLElement {
       const obj = {
         id: task?.id || uid(), name,
         note:       modal.querySelector('#t-note').value.trim(),
+        points:     parseInt(modal.querySelector('#t-points').value)||0,
         personId:   modal.querySelector('#t-person').value,
         date:       modal.querySelector('#t-date').value,
         repeat:     modal.querySelector('#t-repeat').value,
         repeatDays: this._weekSel.slice().sort(),
-        occurrences: task?.occurrences || {}
+        occurrences: task?.occurrences || {},
+        doneBy:     task?.doneBy || {}
       };
-      if (isEdit) {
-        const i = this._state.tasks.findIndex(t => t.id === obj.id);
-        if (i >= 0) this._state.tasks[i] = obj;
-      } else {
-        this._state.tasks.push(obj);
-      }
+      if (isEdit) { const i=this._state.tasks.findIndex(t=>t.id===obj.id); if(i>=0) this._state.tasks[i]=obj; }
+      else this._state.tasks.push(obj);
       this._save(); this._closeModal(); this._renderPersonsGrid();
     });
     if (isEdit) modal.querySelector('#t-del').addEventListener('click', () => {
       if (!confirm('Naozaj zmazať?')) return;
-      this._state.tasks = this._state.tasks.filter(t => t.id !== task.id);
+      this._state.tasks=this._state.tasks.filter(t=>t.id!==task.id);
       this._save(); this._closeModal(); this._renderPersonsGrid();
     });
-
     this._openOverlay();
   }
 
-  // ── Modal: Admin ─────────────────────────────────────────────────────────────
+  // ── Modal: Stála úloha ────────────────────────────────────────────────────
+  _openPermModal(pt) {
+    const isEdit = !!pt;
+    const modal  = this.shadowRoot.querySelector('#modal');
+    modal.innerHTML = `
+      <div class="modal-title">${isEdit?'Upraviť stálu úlohu':'Nová stála úloha'}</div>
+      <div class="fg"><label class="fl">Názov</label>
+        <input class="fi" id="pt-name" value="${pt?.name||''}" placeholder="Napr. Umyť auto"></div>
+      <div class="fg"><label class="fl">Poznámka</label>
+        <textarea class="fta" id="pt-note">${pt?.note||''}</textarea></div>
+      <div class="fg"><label class="fl">Bodová hodnota (0 = bez bodov)</label>
+        <input class="fi" type="number" min="0" step="1" id="pt-points" value="${pt?.points||0}" style="width:100px"></div>
+      <div class="mfooter">
+        ${isEdit?`<button class="btn-del" id="pt-del">Zmazať</button>`:''}
+        <button class="btn-cancel" id="pt-cancel">Zrušiť</button>
+        <button class="btn-save" id="pt-save">Uložiť</button>
+      </div>`;
+    modal.querySelector('#pt-cancel').addEventListener('click', () => this._closeModal());
+    modal.querySelector('#pt-save').addEventListener('click', () => {
+      const name = modal.querySelector('#pt-name').value.trim();
+      if (!name) return;
+      const obj = { id:pt?.id||uid(), name, note:modal.querySelector('#pt-note').value.trim(), points:parseInt(modal.querySelector('#pt-points').value)||0, done:pt?.done||false, doneBy:pt?.doneBy||[] };
+      if (isEdit) { const i=this._state.permanentTasks.findIndex(x=>x.id===obj.id); if(i>=0) this._state.permanentTasks[i]=obj; }
+      else this._state.permanentTasks.push(obj);
+      this._save(); this._closeModal(); this._renderPermSection();
+    });
+    if (isEdit) modal.querySelector('#pt-del').addEventListener('click', () => {
+      if (!confirm('Zmazať?')) return;
+      this._state.permanentTasks=this._state.permanentTasks.filter(x=>x.id!==pt.id);
+      this._save(); this._closeModal(); this._renderPermSection();
+    });
+    this._openOverlay();
+  }
+
+  // ── Modal: Admin ──────────────────────────────────────────────────────────
   _openAdminModal() {
     const modal = this.shadowRoot.querySelector('#modal');
-    if (!this._adminOn) {
-      this._renderPin(modal);
-    } else {
-      this._renderAdminContent(modal);
-    }
+    if (!this._adminOn) this._renderPin(modal);
+    else this._renderAdminContent(modal);
     this._openOverlay();
   }
 
   _renderPin(modal) {
-    this._pinMode  = this._state.adminPin ? 'unlock' : 'setup1';
+    this._pinMode = this._state.adminPin ? 'unlock' : 'setup1';
     this._pinInput = '';
     modal.innerHTML = `
       <div class="modal-title">Admin prístup</div>
@@ -684,9 +1132,7 @@ class UlohyCard extends HTMLElement {
         <div class="pin-dots">${[0,1,2,3].map(i=>`<div class="pin-dot" id="pd${i}"></div>`).join('')}</div>
         <div class="pin-err" id="pin-err"></div>
         <div class="pin-grid">
-          ${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k=>
-            `<button class="pin-key" data-k="${k}">${k}</button>`
-          ).join('')}
+          ${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k=>`<button class="pin-key" data-k="${k}">${k}</button>`).join('')}
         </div>
       </div>
       <div class="mfooter"><button class="btn-cancel" id="pin-cancel">Zrušiť</button></div>`;
@@ -696,30 +1142,26 @@ class UlohyCard extends HTMLElement {
 
   _pinDots(modal) {
     for (let i=0;i<4;i++) {
-      const d = modal.querySelector(`#pd${i}`);
-      if (d) d.classList.toggle('f', i < this._pinInput.length);
+      const d=modal.querySelector('#pd'+i);
+      if(d) d.classList.toggle('f', i<this._pinInput.length);
     }
   }
 
   _pinKey(k, modal) {
-    if (k==='⌫') { this._pinInput = this._pinInput.slice(0,-1); this._pinDots(modal); return; }
-    if (k==='' || this._pinInput.length>=4) return;
-    this._pinInput += k; this._pinDots(modal);
+    if (k==='⌫') { this._pinInput=this._pinInput.slice(0,-1); this._pinDots(modal); return; }
+    if (k===''||this._pinInput.length>=4) return;
+    this._pinInput+=k; this._pinDots(modal);
     if (this._pinInput.length===4) setTimeout(()=>this._processPin(modal),150);
   }
 
   _processPin(modal) {
-    const err = modal.querySelector('#pin-err');
-    const sub = modal.querySelector('#pin-sub');
+    const err=modal.querySelector('#pin-err'), sub=modal.querySelector('#pin-sub');
     if (this._pinMode==='unlock') {
       if (this._pinInput===this._state.adminPin) {
         this._adminOn=true; this._pinInput=''; this._closeModal();
         this.shadowRoot.querySelector('#btn-admin').classList.add('on');
         this._renderPersonsGrid();
-      } else {
-        if(err) err.textContent='Nesprávny PIN';
-        this._pinInput=''; this._pinDots(modal);
-      }
+      } else { if(err) err.textContent='Nesprávny PIN'; this._pinInput=''; this._pinDots(modal); }
     } else if (this._pinMode==='setup1') {
       this._pinFirst=this._pinInput; this._pinInput=''; this._pinMode='setup2';
       if(sub) sub.textContent='Zopakujte PIN'; if(err) err.textContent=''; this._pinDots(modal);
@@ -741,20 +1183,25 @@ class UlohyCard extends HTMLElement {
     modal.innerHTML = `
       <div class="modal-title">⚙ Admin</div>
       <div class="adm-wrap">
-        <div class="adm-section-lbl">Osoby</div>
+        <div class="adm-section-lbl">Osoby a body</div>
         ${this._state.persons.map((p,pi) => {
           const pal = PALETTE[(p.colorIdx||pi) % PALETTE.length];
           const av  = p.avatar ? `<img src="${p.avatar}" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover">` : this._initials(p.name);
+          const pts = p.points || 0;
           return `<div class="person-chip">
             <div class="pcard-avatar" style="width:26px;height:26px;font-size:11px;background:${pal.border};color:#fff">${av}</div>
             <span class="person-chip-name">${p.name}</span>
-            <span class="person-chip-role">${p.role||'Člen'}</span>
+            <span class="person-chip-pts">⭐ ${pts} b</span>
+            <div class="pts-adj">
+              <button class="pts-btn" data-pts-minus="${p.id}">−</button>
+              <input class="pts-inp" type="number" min="1" value="1" id="pv-${p.id}">
+              <button class="pts-btn" data-pts-plus="${p.id}">+</button>
+            </div>
             <button class="edit-ic" data-edit-person="${p.id}" title="Upraviť">✎</button>
             <button class="del-ic" data-del-person="${p.id}" title="Zmazať">✕</button>
           </div>`;
         }).join('')}
         <button class="add-btn" id="adm-add-person">＋ Pridať osobu</button>
-
         <div class="adm-section-lbl" style="margin-top:16px">Nastavenia</div>
         <div class="adm-row">
           <div><div class="adm-row-lbl">Zmeniť PIN</div></div>
@@ -777,8 +1224,26 @@ class UlohyCard extends HTMLElement {
       this.shadowRoot.querySelector('#btn-admin').classList.remove('on');
       this._closeModal(); this._renderPersonsGrid();
     });
+    modal.querySelectorAll('[data-pts-plus]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid=btn.dataset.ptsPlus;
+        const val=Math.abs(parseFloat(modal.querySelector('#pv-'+pid)?.value)||1);
+        const p=this._state.persons.find(x=>x.id===pid);
+        if(p) this._adminAdjust(p, +val);
+        this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
+      });
+    });
+    modal.querySelectorAll('[data-pts-minus]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid=btn.dataset.ptsMinus;
+        const val=Math.abs(parseFloat(modal.querySelector('#pv-'+pid)?.value)||1);
+        const p=this._state.persons.find(x=>x.id===pid);
+        if(p) this._adminAdjust(p, -val);
+        this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
+      });
+    });
     modal.querySelectorAll('[data-edit-person]').forEach(b => b.addEventListener('click', () => {
-      const p = this._state.persons.find(x=>x.id===b.dataset.editPerson);
+      const p=this._state.persons.find(x=>x.id===b.dataset.editPerson);
       if(p) this._openPersonModal(p, modal);
     }));
     modal.querySelectorAll('[data-del-person]').forEach(b => b.addEventListener('click', () => {
@@ -791,8 +1256,8 @@ class UlohyCard extends HTMLElement {
   }
 
   _openPersonModal(person, parentModal) {
-    const isEdit = !!person;
-    const modal  = this.shadowRoot.querySelector('#modal');
+    const isEdit   = !!person;
+    const modal    = this.shadowRoot.querySelector('#modal');
     const colorIdx = person?.colorIdx ?? this._state.persons.length;
 
     modal.innerHTML = `
@@ -818,33 +1283,23 @@ class UlohyCard extends HTMLElement {
     let selColor = colorIdx;
     modal.querySelectorAll('[data-ci]').forEach(dot => {
       dot.addEventListener('click', () => {
-        selColor = +dot.dataset.ci;
-        modal.querySelectorAll('[data-ci]').forEach(d => d.style.outline = 'none');
-        dot.style.outline = '3px solid var(--tx)';
+        selColor=+dot.dataset.ci;
+        modal.querySelectorAll('[data-ci]').forEach(d=>d.style.outline='none');
+        dot.style.outline='3px solid var(--tx)';
       });
     });
     modal.querySelector('#p-back').addEventListener('click', () => {
-      if (parentModal) this._renderAdminContent(modal);
-      else this._closeModal();
+      if(parentModal) this._renderAdminContent(modal); else this._closeModal();
     });
     modal.querySelector('#p-save').addEventListener('click', () => {
-      const name = modal.querySelector('#p-name').value.trim();
-      if (!name) return;
-      const obj = {
-        id:       person?.id || uid(), name,
-        role:     modal.querySelector('#p-role').value,
-        colorIdx: selColor,
-        avatar:   modal.querySelector('#p-avatar').value.trim()
-      };
-      if (isEdit) {
-        const i = this._state.persons.findIndex(p=>p.id===obj.id);
-        if(i>=0) this._state.persons[i]=obj;
-      } else {
-        this._state.persons.push(obj);
-      }
+      const name=modal.querySelector('#p-name').value.trim();
+      if(!name) return;
+      const obj={ id:person?.id||uid(), name, role:modal.querySelector('#p-role').value, colorIdx:selColor, avatar:modal.querySelector('#p-avatar').value.trim(), points:person?.points||0 };
+      if(isEdit){ const i=this._state.persons.findIndex(p=>p.id===obj.id); if(i>=0) this._state.persons[i]=obj; }
+      else this._state.persons.push(obj);
       this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
     });
-    if (isEdit) modal.querySelector('#p-del').addEventListener('click', () => {
+    if(isEdit) modal.querySelector('#p-del').addEventListener('click', ()=>{
       if(!confirm('Zmazať osobu a jej úlohy?')) return;
       this._state.persons=this._state.persons.filter(p=>p.id!==person.id);
       this._state.tasks=this._state.tasks.filter(t=>t.personId!==person.id);
