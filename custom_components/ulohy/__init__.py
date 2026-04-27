@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
@@ -86,10 +87,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     else:
         _LOGGER.warning("[ulohy] ulohy-card.js nenájdená v %s", js_path)
 
-    # --- Auto-registrácia Lovelace resource (zjednotená s ostatnými modulmi) ---
-    async def _do_register():
+    # --- Auto-registrácia Lovelace resource – čakáme kým HA plne naštartuje ---
+    async def _register_when_ready(event=None):
         await _async_register_lovelace_resource(hass)
-    hass.async_create_task(_do_register())
+
+    hass.bus.async_listen_once("homeassistant_started", _register_when_ready)
 
     return True
 
@@ -108,8 +110,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
         )
 
         if existing is None:
-            new_id = max((item.get("id", 0) for item in items), default=0) + 1
-            items.append({"id": new_id, "type": "module", "url": resource_url})
+            items.append({"id": uuid.uuid4().hex, "type": "module", "url": resource_url})
             resources_data["items"] = items
             await resources_store.async_save(resources_data)
             _LOGGER.info("[ulohy] Lovelace resource pridaný: %s", resource_url)
