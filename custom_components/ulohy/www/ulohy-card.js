@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.2
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.3
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -291,14 +291,17 @@ const CSS = `
   transition: color .15s, background .15s; text-align: left;
 }
 .log-toggle:hover { color: var(--tx); background: var(--sf); }
-.log-body { }
-.log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.log-table td { padding: 3px 12px; border-bottom: 1px solid var(--bd); vertical-align: top; }
+.log-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.log-table th {
+  text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 600;
+  color: var(--mu); border-bottom: 2px solid var(--bd); white-space: nowrap;
+}
+.log-table td { padding: 5px 10px; border-bottom: 1px solid var(--bd); vertical-align: top; }
 .log-table tr:last-child td { border-bottom: none; }
 .log-pos { color: #27500A; font-weight: 700; }
 .log-neg { color: #791F1F; font-weight: 700; }
 .log-bal { font-weight: 600; }
-.log-ts  { color: var(--mu); white-space: nowrap; }
+.log-ts  { color: var(--mu); white-space: nowrap; font-size: 11px; }
 
 /* ── Stály zoznam sekcia ── */
 .perm-section {
@@ -668,24 +671,51 @@ class UlohyCard extends HTMLElement {
   _renderLogHTML(person) {
     const log = (this._state.pointsLog||{})[person.id] || [];
     if (log.length === 0) return '';
+    return `<div class="log-wrap">
+      <button class="log-toggle" data-log-pid="${person.id}">📊 História bodov (${log.length})</button>
+    </div>`;
+  }
+
+  _openLogModal(person) {
+    const log = (this._state.pointsLog||{})[person.id] || [];
+    const modal = this.shadowRoot.querySelector('#modal');
+    const pts   = person.points || 0;
+
     let rows = '';
-    for (const e of log.slice(0, 15)) {
+    for (const e of log) {
       const cls  = e.delta >= 0 ? 'log-pos' : 'log-neg';
       const sign = e.delta >= 0 ? '+' : '';
       rows += `<tr>
         <td class="log-ts">${fmtDateTime(e.ts)}</td>
         <td>${e.desc}</td>
-        <td class="${cls}">${sign}${e.delta}</td>
-        <td class="log-bal">${e.bal}</td>
+        <td class="${cls}">${sign}${e.delta} b</td>
+        <td class="log-bal">${e.bal} b</td>
       </tr>`;
     }
-    if (log.length > 15) rows += `<tr><td colspan="4" style="color:var(--mu);text-align:center;padding:4px 12px">... a ${log.length-15} ďalších</td></tr>`;
-    return `<div class="log-wrap">
-      <button class="log-toggle" data-log-pid="${person.id}">📊 História bodov</button>
-      <div class="log-body" id="log-body-${person.id}" style="display:none">
-        <table class="log-table"><tbody>${rows}</tbody></table>
-      </div>
-    </div>`;
+
+    modal.innerHTML = `
+      <div class="modal-title">📊 História bodov – ${person.name}</div>
+      <div style="font-size:13px;color:var(--mu);margin-bottom:12px">Aktuálny zostatok: <strong style="color:${pts<0?'#791F1F':'#1565C0'}">${pts} b</strong></div>
+      ${log.length === 0
+        ? `<div class="empty" style="padding:24px 0">Žiadne záznamy</div>`
+        : `<div style="overflow-x:auto">
+            <table class="log-table">
+              <thead><tr>
+                <th>Čas</th>
+                <th>Popis</th>
+                <th>Zmena</th>
+                <th>Zostatok</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`
+      }
+      <div class="mfooter">
+        <button class="btn-cancel" id="log-close">Zavrieť</button>
+      </div>`;
+
+    modal.querySelector('#log-close').addEventListener('click', () => this._closeModal());
+    this._openOverlay();
   }
 
   _taskRowHTML(task, iso, isToday) {
@@ -775,14 +805,11 @@ class UlohyCard extends HTMLElement {
     grid.querySelectorAll('[data-add-person]').forEach(btn => {
       btn.addEventListener('click', () => this._openTaskModal(null, btn.dataset.addPerson));
     });
-    // log toggle
+    // log toggle → otvori modal
     grid.querySelectorAll('.log-toggle').forEach(btn => {
       btn.addEventListener('click', () => {
-        const body = grid.querySelector('#log-body-' + btn.dataset.logPid);
-        if (!body) return;
-        const open = body.style.display !== 'none';
-        body.style.display = open ? 'none' : '';
-        btn.textContent = (open ? '📊' : '📊▲') + ' História bodov';
+        const p = this._state.persons.find(x => x.id === btn.dataset.logPid);
+        if (p) this._openLogModal(p);
       });
     });
     // pts spend badge
