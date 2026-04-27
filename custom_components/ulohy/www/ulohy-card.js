@@ -122,25 +122,47 @@ const STYLES = `
     --u-text: var(--primary-text-color, #212121);
     --u-muted: var(--secondary-text-color, #757575);
     --u-accent: var(--primary-color, #1976d2);
+    /* stavové farby rovnaké ako sklad */
     --u-todo-bg: #FAEEDA;    --u-todo-text: #633806;
     --u-done-bg: #EAF3DE;    --u-done-text: #27500A;
+    --u-checked-bg: #E1F5EE; --u-checked-text: #085041;
     --u-overdue-bg: #FCEBEB; --u-overdue-text: #791F1F;
-    --u-points-bg: #E8F0FE;  --u-points-text: #1565C0;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  .card { background: var(--u-bg); border-radius: var(--u-radius); overflow: hidden; }
+  .card {
+    background: var(--u-bg);
+    border-radius: var(--u-radius);
+    overflow: hidden;
+  }
 
   /* ── Hlavička ── */
   .card-header {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     padding: 16px 16px 0;
   }
-  .card-title { font-size: 16px; font-weight: 600; color: var(--u-text); letter-spacing: -0.01em; }
-  .header-actions { display: flex; gap: 6px; align-items: center; }
+  .card-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--u-text);
+    letter-spacing: -0.01em;
+  }
+  .header-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
   .icon-btn {
-    background: none; border: none; cursor: pointer; color: var(--u-muted);
-    padding: 6px; border-radius: var(--u-radius-sm); font-size: 16px; line-height: 1;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--u-muted);
+    padding: 6px;
+    border-radius: var(--u-radius-sm);
+    font-size: 16px;
+    line-height: 1;
     transition: background 0.15s, color 0.15s;
   }
   .icon-btn:hover { background: var(--u-surface); color: var(--u-text); }
@@ -148,14 +170,23 @@ const STYLES = `
 
   /* ── Tabs ── */
   .tabs {
-    display: flex; padding: 12px 16px 0;
+    display: flex;
+    gap: 0;
+    padding: 12px 16px 0;
     border-bottom: 1px solid var(--u-border);
   }
   .tab {
-    padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer;
-    border: none; background: none; color: var(--u-muted);
-    border-bottom: 2px solid transparent; margin-bottom: -1px;
-    font-family: inherit; border-radius: var(--u-radius-sm) var(--u-radius-sm) 0 0;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: var(--u-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    font-family: inherit;
+    border-radius: var(--u-radius-sm) var(--u-radius-sm) 0 0;
     transition: color 0.15s;
   }
   .tab:hover { color: var(--u-text); }
@@ -166,146 +197,166 @@ const STYLES = `
   .section.active { display: block; }
 
   /* ── Navigácia dátumom ── */
-  .date-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .date-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
   .nav-btn {
-    background: none; border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm); width: 30px; height: 30px;
-    cursor: pointer; font-size: 14px; display: flex; align-items: center;
-    justify-content: center; color: var(--u-text); transition: background 0.15s;
+    background: none;
+    border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    width: 30px; height: 30px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--u-text);
+    transition: background 0.15s;
   }
   .nav-btn:hover { background: var(--u-surface); }
-  .date-label { flex: 1; font-size: 14px; font-weight: 500; color: var(--u-text); }
+  .date-label {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--u-text);
+  }
   .today-chip {
-    font-size: 11px; padding: 3px 8px; border: 1px solid var(--u-border);
-    border-radius: 20px; background: none; cursor: pointer; color: var(--u-muted);
-    font-family: inherit; transition: background 0.15s;
+    font-size: 11px;
+    padding: 3px 8px;
+    border: 1px solid var(--u-border);
+    border-radius: 20px;
+    background: none;
+    cursor: pointer;
+    color: var(--u-muted);
+    font-family: inherit;
+    transition: background 0.15s;
   }
   .today-chip:hover { background: var(--u-surface); }
 
-  /* ── Skupina ── */
+  /* ── Skupina úloh ── */
   .task-group-label {
-    font-size: 11px; font-weight: 600; color: var(--u-muted);
-    text-transform: uppercase; letter-spacing: 0.06em;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--u-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
     margin: 12px 0 6px;
   }
   .task-group-label:first-child { margin-top: 0; }
 
-  /* ── Úloha ── */
+  /* ── Úloha (sklad štýl) ── */
   .task-row {
-    border-radius: var(--u-radius-sm); margin-bottom: 4px;
-    overflow: hidden; border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    margin-bottom: 4px;
+    overflow: hidden;
+    border: 1px solid var(--u-border);
     transition: box-shadow 0.15s;
   }
   .task-row:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+
   .task-main {
-    display: flex; align-items: center; gap: 10px;
-    padding: 9px 10px; cursor: pointer; user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    cursor: pointer;
+    user-select: none;
   }
-  .task-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .task-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
   .task-dot.todo    { background: #EF9F27; }
   .task-dot.done    { background: #639922; }
+  .task-dot.checked { background: #1D9E75; }
   .task-dot.overdue { background: #E24B4A; }
-  .task-dot.permanent-done { background: #639922; }
-  .task-dot.permanent-todo { background: #aaa; }
 
   .task-avatar {
-    width: 22px; height: 22px; border-radius: 50%;
-    background: var(--u-surface); border: 1px solid var(--u-border);
-    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 600; color: var(--u-muted); overflow: hidden;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--u-surface);
+    border: 1px solid var(--u-border);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--u-muted);
+    overflow: hidden;
   }
   .task-avatar img { width: 100%; height: 100%; object-fit: cover; }
 
   .task-name {
-    flex: 1; font-size: 13px; font-weight: 500; color: var(--u-text);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--u-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
+
   .task-repeat-tag {
-    font-size: 10px; padding: 2px 6px; border-radius: 10px;
-    background: var(--u-surface); color: var(--u-muted);
-    border: 1px solid var(--u-border); white-space: nowrap; flex-shrink: 0;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: var(--u-surface);
+    color: var(--u-muted);
+    border: 1px solid var(--u-border);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
-  .task-points-tag {
-    font-size: 10px; padding: 2px 6px; border-radius: 10px;
-    background: var(--u-points-bg); color: var(--u-points-text);
-    border: 1px solid rgba(21,101,192,0.2); white-space: nowrap; flex-shrink: 0;
-    font-weight: 600;
-  }
+
   .task-badge {
-    font-size: 11px; font-weight: 600; padding: 3px 8px;
-    border-radius: 10px; white-space: nowrap; flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .task-badge.todo    { background: var(--u-todo-bg);    color: var(--u-todo-text); }
   .task-badge.done    { background: var(--u-done-bg);    color: var(--u-done-text); }
+  .task-badge.checked { background: var(--u-checked-bg); color: var(--u-checked-text); }
   .task-badge.overdue { background: var(--u-overdue-bg); color: var(--u-overdue-text); }
-  .task-badge.permanent-done { background: var(--u-done-bg); color: var(--u-done-text); }
-  .task-badge.permanent-todo { background: var(--u-surface); color: var(--u-muted); }
 
-  .task-chevron { font-size: 12px; color: var(--u-muted); transition: transform 0.2s; flex-shrink: 0; }
+  .task-chevron {
+    font-size: 12px;
+    color: var(--u-muted);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+  }
   .task-row.open .task-chevron { transform: rotate(90deg); }
 
   /* ── Detail úlohy ── */
   .task-detail {
-    display: none; padding: 8px 10px 10px;
+    display: none;
+    padding: 8px 10px 10px;
     border-top: 1px solid var(--u-border);
-    background: var(--u-surface); gap: 8px;
-    flex-wrap: wrap; align-items: flex-start;
+    background: var(--u-surface);
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
   }
   .task-row.open .task-detail { display: flex; }
 
-  /* ── Výber kto urobil ── */
-  .who-did-label {
-    font-size: 11px; font-weight: 600; color: var(--u-muted);
-    text-transform: uppercase; letter-spacing: 0.05em;
-    flex-basis: 100%; margin-bottom: 2px;
-  }
-  .who-did-grid { display: flex; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
-  .who-btn {
-    display: flex; align-items: center; gap: 5px;
-    padding: 5px 10px; border: 1.5px solid var(--u-border);
-    border-radius: 20px; background: var(--u-bg);
-    cursor: pointer; font-size: 12px; font-weight: 500;
-    color: var(--u-text); font-family: inherit;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .who-btn.sel {
-    border-color: var(--u-accent); background: var(--u-points-bg);
-    color: var(--u-points-text);
-  }
-  .who-avatar {
-    width: 18px; height: 18px; border-radius: 50%;
-    background: var(--u-border); display: flex; align-items: center;
-    justify-content: center; font-size: 10px; font-weight: 700;
-    overflow: hidden; flex-shrink: 0;
-  }
-  .who-avatar img { width: 100%; height: 100%; object-fit: cover; }
-
-  .confirm-done-btn {
-    padding: 6px 14px; border: none; border-radius: var(--u-radius-sm);
-    background: var(--u-done-bg); color: var(--u-done-text);
-    cursor: pointer; font-size: 12px; font-weight: 600;
-    font-family: inherit; transition: opacity 0.15s;
-    margin-top: 4px;
-  }
-  .confirm-done-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .confirm-done-btn:not(:disabled):hover { opacity: 0.85; }
-
   .action-btn {
-    font-size: 12px; font-weight: 600; padding: 6px 12px;
-    border-radius: var(--u-radius-sm); border: none; cursor: pointer;
-    font-family: inherit; transition: opacity 0.15s;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: var(--u-radius-sm);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    transition: opacity 0.15s;
   }
   .action-btn:hover { opacity: 0.85; }
-  .action-btn.revert-btn {
-    background: var(--u-surface); color: var(--u-muted);
-    border: 1px solid var(--u-border);
-  }
-
-  .done-info {
-    font-size: 11px; color: var(--u-done-text);
-    background: var(--u-done-bg); padding: 4px 10px;
-    border-radius: var(--u-radius-sm); flex-basis: 100%;
-  }
+  .action-btn.done-btn    { background: var(--u-done-bg);    color: var(--u-done-text); }
+  .action-btn.checked-btn { background: var(--u-checked-bg); color: var(--u-checked-text); }
+  .action-btn.revert-btn  { background: var(--u-surface); color: var(--u-muted);
+                             border: 1px solid var(--u-border); }
 
   .admin-acts { margin-left: auto; display: flex; gap: 6px; }
   .edit-icon, .del-icon {
@@ -317,139 +368,211 @@ const STYLES = `
   .edit-icon:hover { background: var(--u-todo-bg); color: var(--u-todo-text); }
   .del-icon:hover  { background: var(--u-overdue-bg); color: var(--u-overdue-text); }
 
-  /* ── Permanentný zoznam banner ── */
-  .permanent-banner {
-    background: linear-gradient(135deg, #F0F4FF 0%, #E8F0FE 100%);
-    border: 1px solid rgba(21,101,192,0.15);
-    border-radius: var(--u-radius-sm);
-    padding: 8px 12px 6px;
-    margin-bottom: 12px;
-  }
-  .permanent-banner-title {
-    font-size: 11px; font-weight: 700; color: var(--u-points-text);
-    text-transform: uppercase; letter-spacing: 0.06em;
-    margin-bottom: 6px; display: flex; align-items: center; gap: 5px;
-  }
-
   /* ── Osobné karty ── */
   .persons-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 10px;
   }
-  .person-card { border: 1px solid var(--u-border); border-radius: var(--u-radius-sm); overflow: hidden; }
+  .person-card {
+    border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    overflow: hidden;
+  }
   .person-card-header {
-    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-    background: var(--u-surface); border-bottom: 1px solid var(--u-border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--u-surface);
+    border-bottom: 1px solid var(--u-border);
   }
   .person-avatar-lg {
-    width: 32px; height: 32px; border-radius: 50%;
-    background: var(--u-border); display: flex; align-items: center;
-    justify-content: center; font-size: 16px; font-weight: 700;
-    color: var(--u-muted); overflow: hidden; flex-shrink: 0;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--u-border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700;
+    color: var(--u-muted);
+    overflow: hidden;
+    flex-shrink: 0;
   }
   .person-avatar-lg img { width: 100%; height: 100%; object-fit: cover; }
   .person-name-lg { font-size: 14px; font-weight: 600; color: var(--u-text); }
   .person-stats { font-size: 11px; color: var(--u-muted); }
-  .person-points-badge {
-    margin-left: auto; background: var(--u-points-bg);
-    color: var(--u-points-text); font-size: 13px; font-weight: 700;
-    padding: 4px 10px; border-radius: 20px;
-    border: 1px solid rgba(21,101,192,0.2);
-    white-space: nowrap;
-  }
   .person-tasks { padding: 6px 0; }
   .person-task-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 12px; border-bottom: 1px solid var(--u-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--u-border);
+    cursor: pointer;
     transition: background 0.1s;
   }
   .person-task-row:last-child { border-bottom: none; }
+  .person-task-row:hover { background: var(--u-surface); }
   .person-task-name { flex: 1; font-size: 13px; color: var(--u-text); }
   .person-task-date { font-size: 11px; color: var(--u-muted); }
 
   /* ── Empty state ── */
-  .empty { text-align: center; padding: 32px 16px; color: var(--u-muted); font-size: 13px; }
+  .empty {
+    text-align: center;
+    padding: 32px 16px;
+    color: var(--u-muted);
+    font-size: 13px;
+  }
   .empty-icon { font-size: 28px; margin-bottom: 8px; }
 
-  /* ── Saving ── */
-  .saving-bar { font-size: 11px; color: var(--u-muted); padding: 4px 16px; min-height: 20px; }
+  /* ── Saving indikátor ── */
+  .saving-bar {
+    font-size: 11px;
+    color: var(--u-muted);
+    padding: 4px 16px;
+    min-height: 20px;
+    transition: opacity 0.3s;
+  }
 
   /* ── Modal ── */
   .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.45);
     display: flex; align-items: center; justify-content: center;
-    z-index: 9999; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    z-index: 9999;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s;
   }
   .modal-overlay.open { opacity: 1; pointer-events: all; }
   .modal {
-    background: var(--u-bg); border-radius: var(--u-radius); padding: 20px;
-    width: min(440px, 92vw); max-height: 88vh; overflow-y: auto;
+    background: var(--u-bg);
+    border-radius: var(--u-radius);
+    padding: 20px;
+    width: min(420px, 92vw);
+    max-height: 88vh;
+    overflow-y: auto;
     box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-    transform: translateY(12px); transition: transform 0.2s;
+    transform: translateY(12px);
+    transition: transform 0.2s;
   }
   .modal-overlay.open .modal { transform: translateY(0); }
   .modal-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--u-text); }
   .form-group { margin-bottom: 12px; }
-  .form-label { display: block; font-size: 12px; font-weight: 500; color: var(--u-muted); margin-bottom: 5px; }
+  .form-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--u-muted);
+    margin-bottom: 5px;
+  }
   .form-input, .form-select, .form-textarea {
-    width: 100%; padding: 8px 10px; border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm); background: var(--u-bg); color: var(--u-text);
-    font-size: 13px; font-family: inherit; outline: none; transition: border-color 0.15s;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    background: var(--u-bg);
+    color: var(--u-text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
   }
-  .form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--u-accent); }
+  .form-input:focus, .form-select:focus, .form-textarea:focus {
+    border-color: var(--u-accent);
+  }
   .form-textarea { min-height: 60px; resize: vertical; }
-
-  .points-row { display: flex; align-items: center; gap: 8px; }
-  .points-row .form-input { width: 80px; text-align: center; }
-
-  .weekday-grid { display: flex; gap: 6px; flex-wrap: wrap; }
-  .weekday-btn {
-    width: 36px; height: 36px; border: 1px solid var(--u-border);
-    border-radius: 50%; background: none; cursor: pointer;
-    font-size: 12px; font-weight: 500; color: var(--u-muted);
-    font-family: inherit; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  .weekday-grid {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
   }
-  .weekday-btn.sel { background: var(--u-accent); color: #fff; border-color: var(--u-accent); }
-
+  .weekday-btn {
+    width: 36px; height: 36px;
+    border: 1px solid var(--u-border);
+    border-radius: 50%;
+    background: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--u-muted);
+    font-family: inherit;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .weekday-btn.sel {
+    background: var(--u-accent);
+    color: #fff;
+    border-color: var(--u-accent);
+  }
   .modal-footer {
-    display: flex; justify-content: flex-end; gap: 8px;
-    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--u-border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--u-border);
   }
   .btn-cancel {
-    padding: 8px 16px; border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm); background: none; cursor: pointer;
-    font-size: 13px; color: var(--u-muted); font-family: inherit;
+    padding: 8px 16px;
+    border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    background: none;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--u-muted);
+    font-family: inherit;
   }
   .btn-save {
-    padding: 8px 16px; border: none; border-radius: var(--u-radius-sm);
-    background: var(--u-accent); color: #fff; cursor: pointer;
-    font-size: 13px; font-weight: 500; font-family: inherit;
+    padding: 8px 16px;
+    border: none;
+    border-radius: var(--u-radius-sm);
+    background: var(--u-accent);
+    color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
   }
   .btn-save:hover { opacity: 0.9; }
   .btn-danger {
-    padding: 8px 16px; border: none; border-radius: var(--u-radius-sm);
-    background: var(--u-overdue-bg); color: var(--u-overdue-text);
-    cursor: pointer; font-size: 13px; font-family: inherit; margin-right: auto;
+    padding: 8px 16px;
+    border: none;
+    border-radius: var(--u-radius-sm);
+    background: var(--u-overdue-bg);
+    color: var(--u-overdue-text);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    margin-right: auto;
   }
 
   /* ── PIN ── */
   .pin-wrap { text-align: center; padding: 8px 0; }
   .pin-dots { display: flex; gap: 12px; justify-content: center; margin: 12px 0; }
   .pin-dot {
-    width: 14px; height: 14px; border-radius: 50%;
-    border: 2px solid var(--u-border); background: none; transition: background 0.15s;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--u-border);
+    background: none;
+    transition: background 0.15s;
   }
   .pin-dot.filled { background: var(--u-accent); border-color: var(--u-accent); }
   .pin-grid {
-    display: grid; grid-template-columns: repeat(3, 64px);
-    gap: 8px; justify-content: center; margin-top: 8px;
+    display: grid;
+    grid-template-columns: repeat(3, 64px);
+    gap: 8px;
+    justify-content: center;
+    margin-top: 8px;
   }
   .pin-key {
-    height: 48px; border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm); background: var(--u-surface);
-    cursor: pointer; font-size: 18px; font-weight: 500;
-    color: var(--u-text); font-family: inherit; transition: background 0.15s;
+    height: 48px;
+    border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    background: var(--u-surface);
+    cursor: pointer;
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--u-text);
+    font-family: inherit;
+    transition: background 0.15s;
   }
   .pin-key:hover { background: var(--u-border); }
   .pin-key.del { font-size: 14px; }
@@ -458,65 +581,129 @@ const STYLES = `
   /* ── Admin sekcia ── */
   .admin-section { padding: 0; }
   .admin-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 0; border-bottom: 1px solid var(--u-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--u-border);
   }
   .admin-row:last-child { border-bottom: none; }
   .admin-row-label { font-size: 13px; color: var(--u-text); }
   .admin-row-sub { font-size: 11px; color: var(--u-muted); }
-
   .add-btn {
-    display: flex; align-items: center; gap: 6px;
-    padding: 7px 12px; border: 1px dashed var(--u-border);
-    border-radius: var(--u-radius-sm); background: none; cursor: pointer;
-    font-size: 13px; color: var(--u-muted); font-family: inherit;
-    width: 100%; margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border: 1px dashed var(--u-border);
+    border-radius: var(--u-radius-sm);
+    background: none;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--u-muted);
+    font-family: inherit;
+    width: 100%;
+    margin-top: 8px;
     transition: border-color 0.15s, color 0.15s;
   }
   .add-btn:hover { border-color: var(--u-accent); color: var(--u-accent); }
-
   .person-chip {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px; border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm); margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm);
+    margin-bottom: 6px;
   }
   .person-chip-name { flex: 1; font-size: 13px; color: var(--u-text); }
-  .person-chip-points {
-    font-size: 12px; font-weight: 700; color: var(--u-points-text);
-    background: var(--u-points-bg); padding: 2px 8px; border-radius: 10px;
+
+  /* ── Bodový tag ── */
+  .task-pts-tag {
+    font-size: 10px; padding: 2px 6px; border-radius: 10px;
+    background: #E8F0FE; color: #1565C0;
+    border: 1px solid rgba(21,101,192,0.2); white-space: nowrap; flex-shrink: 0;
+    font-weight: 600;
   }
 
-  /* ── Admin body adjust ── */
-  .points-adjust {
-    display: flex; align-items: center; gap: 6px;
+  /* ── Výber kto urobil ── */
+  .who-label {
+    font-size: 11px; font-weight: 600; color: var(--u-muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    flex-basis: 100%; margin-bottom: 2px;
   }
-  .pts-btn {
-    width: 28px; height: 28px; border: 1px solid var(--u-border);
-    border-radius: var(--u-radius-sm); background: var(--u-surface);
-    cursor: pointer; font-size: 14px; font-weight: 700;
+  .who-grid { display: flex; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
+  .who-btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border: 1.5px solid var(--u-border);
+    border-radius: 20px; background: var(--u-bg);
+    cursor: pointer; font-size: 12px; font-weight: 500;
     color: var(--u-text); font-family: inherit;
-    display: flex; align-items: center; justify-content: center;
-    transition: background 0.15s;
+    transition: border-color 0.15s, background 0.15s;
   }
-  .pts-btn:hover { background: var(--u-border); }
-  .pts-input {
-    width: 52px; text-align: center; padding: 4px 6px;
-    border: 1px solid var(--u-border); border-radius: var(--u-radius-sm);
-    background: var(--u-bg); color: var(--u-text);
-    font-size: 13px; font-family: inherit;
+  .who-btn.sel { border-color: var(--u-accent); background: #E8F0FE; color: #1565C0; }
+  .who-avatar {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--u-border); display: flex; align-items: center;
+    justify-content: center; font-size: 9px; font-weight: 700; overflow: hidden;
   }
+  .who-avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .confirm-btn {
+    font-size: 12px; font-weight: 600; padding: 6px 12px;
+    border-radius: var(--u-radius-sm); border: none; cursor: pointer;
+    font-family: inherit; background: var(--u-done-bg); color: var(--u-done-text);
+    transition: opacity 0.15s; margin-top: 2px;
+  }
+  .confirm-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .confirm-btn:not(:disabled):hover { opacity: 0.85; }
+  .done-info {
+    font-size: 11px; color: var(--u-done-text); background: var(--u-done-bg);
+    padding: 3px 8px; border-radius: var(--u-radius-sm); flex-basis: 100%;
+  }
+
+  /* ── Body badge na osobe ── */
+  .person-pts-badge {
+    margin-left: auto; font-size: 12px; font-weight: 700;
+    padding: 3px 9px; border-radius: 12px; white-space: nowrap;
+    cursor: pointer; transition: opacity 0.15s;
+    background: #E8F0FE; color: #1565C0; border: 1px solid rgba(21,101,192,0.2);
+  }
+  .person-pts-badge.negative { background: var(--u-overdue-bg); color: var(--u-overdue-text); border-color: rgba(121,31,31,0.2); }
+  .person-pts-badge:hover { opacity: 0.8; }
 
   /* ── Log transakcií ── */
-  .log-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
-  .log-table th {
-    text-align: left; padding: 5px 8px; font-size: 11px; font-weight: 600;
-    color: var(--u-muted); border-bottom: 2px solid var(--u-border); white-space: nowrap;
+  .log-wrap { border-top: 1px solid var(--u-border); }
+  .log-title {
+    font-size: 11px; font-weight: 600; color: var(--u-muted);
+    text-transform: uppercase; letter-spacing: 0.06em; padding: 8px 12px 4px;
   }
-  .log-table td { padding: 5px 8px; border-bottom: 1px solid var(--u-border); vertical-align: top; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .log-table td { padding: 4px 12px; border-bottom: 1px solid var(--u-border); vertical-align: top; }
   .log-table tr:last-child td { border-bottom: none; }
   .log-pos { color: var(--u-done-text); font-weight: 700; }
   .log-neg { color: var(--u-overdue-text); font-weight: 700; }
   .log-bal { font-weight: 600; }
+  .log-ts { color: var(--u-muted); white-space: nowrap; }
+
+  /* ── Admin body ── */
+  .person-chip-pts {
+    font-size: 11px; font-weight: 700; color: #1565C0;
+    background: #E8F0FE; padding: 2px 7px; border-radius: 10px;
+  }
+  .pts-adjust { display: flex; align-items: center; gap: 4px; }
+  .pts-btn {
+    width: 26px; height: 26px; border: 1px solid var(--u-border);
+    border-radius: var(--u-radius-sm); background: var(--u-surface);
+    cursor: pointer; font-size: 14px; font-weight: 700; color: var(--u-text);
+    font-family: inherit; display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s;
+  }
+  .pts-btn:hover { background: var(--u-border); }
+  .pts-input {
+    width: 46px; text-align: center; padding: 3px 4px;
+    border: 1px solid var(--u-border); border-radius: var(--u-radius-sm);
+    background: var(--u-bg); color: var(--u-text); font-size: 12px; font-family: inherit;
+  }
 `;
 
 // ─── Hlavná trieda ───────────────────────────────────────────────────────────
