@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.3
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.5
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -796,7 +796,11 @@ class UlohyCard extends HTMLElement {
           const task = this._state.tasks.find(t => t.id === row.dataset.tid);
           const iso  = row.dataset.date;
           if (task) {
-            row.querySelector('.task-detail').innerHTML = this._taskDetailHTML(task, iso, getOcc(task, iso), getOcc(task,iso)==='todo'&&iso<todayISO()?'overdue':getOcc(task,iso));
+            // Vyčisti staré listenery nahradením nódu klonom
+            const oldDetail = row.querySelector('.task-detail');
+            const newDetail = oldDetail.cloneNode(false);
+            oldDetail.parentNode.replaceChild(newDetail, oldDetail);
+            newDetail.innerHTML = this._taskDetailHTML(task, iso, getOcc(task, iso), getOcc(task,iso)==='todo'&&iso<todayISO()?'overdue':getOcc(task,iso));
             this._attachDetailListeners(row, task, iso);
           }
         }
@@ -845,9 +849,12 @@ class UlohyCard extends HTMLElement {
     row.querySelectorAll('[data-confirm]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
+        // Guard: ak už je done (napr. double-click), nepripisuj body znova
+        if (getOcc(task, iso) === 'done') return;
         const doneBy = [...(this._whoSel[taskKey] || new Set())];
+        if (doneBy.length === 0) return;
         setOcc(task, iso, 'done', doneBy);
-        if (doneBy.length) this._addPoints(doneBy, task.points||0, task.name);
+        this._addPoints(doneBy, task.points||0, task.name);
         delete this._whoSel[taskKey];
         this._save(); this._renderPersonsGrid();
       });
@@ -1237,12 +1244,8 @@ class UlohyCard extends HTMLElement {
             <div class="pcard-avatar" style="width:26px;height:26px;font-size:11px;background:${pal.border};color:#fff">${av}</div>
             <span class="person-chip-name">${p.name}</span>
             <span class="person-chip-pts">⭐ ${pts} b</span>
-            <div class="pts-adj">
-              <button class="pts-btn" data-pts-minus="${p.id}">−</button>
-              <input class="pts-inp" type="number" min="1" value="1" id="pv-${p.id}">
-              <button class="pts-btn" data-pts-plus="${p.id}">+</button>
-            </div>
-            <button class="edit-ic" data-edit-person="${p.id}" title="Upraviť">✎</button>
+            <button class="edit-ic" data-adj-person="${p.id}" title="Upraviť body">🪙</button>
+            <button class="edit-ic" data-edit-person="${p.id}" title="Upraviť osobu">✎</button>
             <button class="del-ic" data-del-person="${p.id}" title="Zmazať">✕</button>
           </div>`;
         }).join('')}
@@ -1269,22 +1272,10 @@ class UlohyCard extends HTMLElement {
       this.shadowRoot.querySelector('#btn-admin').classList.remove('on');
       this._closeModal(); this._renderPersonsGrid();
     });
-    modal.querySelectorAll('[data-pts-plus]').forEach(btn => {
+    modal.querySelectorAll('[data-adj-person]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const pid=btn.dataset.ptsPlus;
-        const val=Math.abs(parseFloat(modal.querySelector('#pv-'+pid)?.value)||1);
-        const p=this._state.persons.find(x=>x.id===pid);
-        if(p) this._adminAdjust(p, +val);
-        this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
-      });
-    });
-    modal.querySelectorAll('[data-pts-minus]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const pid=btn.dataset.ptsMinus;
-        const val=Math.abs(parseFloat(modal.querySelector('#pv-'+pid)?.value)||1);
-        const p=this._state.persons.find(x=>x.id===pid);
-        if(p) this._adminAdjust(p, -val);
-        this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
+        const p = this._state.persons.find(x => x.id === btn.dataset.adjPerson);
+        if (p) this._openAdjPointsModal(p, modal);
       });
     });
     modal.querySelectorAll('[data-edit-person]').forEach(b => b.addEventListener('click', () => {
@@ -1298,6 +1289,44 @@ class UlohyCard extends HTMLElement {
       this._state.tasks=this._state.tasks.filter(t=>t.personId!==pid);
       this._save(); this._renderAdminContent(modal); this._renderPersonsGrid();
     }));
+  }
+
+  _openAdjPointsModal(person, parentModal) {
+    const modal = this.shadowRoot.querySelector('#modal');
+    const pts   = person.points || 0;
+
+    modal.innerHTML = `
+      <div class="modal-title">🪙 Úprava bodov – ${person.name}</div>
+      <div style="font-size:13px;color:var(--mu);margin-bottom:16px">Aktuálny zostatok: <strong>${pts} b</strong></div>
+      <div class="fg">
+        <label class="fl">Počet bodov</label>
+        <input class="fi" type="number" id="adj-val" value="0" step="1" style="font-size:20px;font-weight:700;text-align:center">
+      </div>
+      <div style="font-size:12px;color:var(--mu);margin-top:-6px;margin-bottom:12px">
+        Kladné číslo = pridať body &nbsp;·&nbsp; záporné číslo = odobrať body
+      </div>
+      <div class="mfooter">
+        <button class="btn-cancel" id="adj-back">Späť</button>
+        <button class="btn-save" id="adj-save">Potvrdiť</button>
+      </div>`;
+
+    const inp = modal.querySelector('#adj-val');
+    inp.focus(); inp.select();
+
+    modal.querySelector('#adj-back').addEventListener('click', () => {
+      if (parentModal) this._renderAdminContent(modal); else this._closeModal();
+    });
+    modal.querySelector('#adj-save').addEventListener('click', () => {
+      const delta = parseFloat(inp.value);
+      if (!delta || isNaN(delta)) { inp.style.borderColor = '#E24B4A'; return; }
+      this._adminAdjust(person, delta);
+      this._save(); this._renderPersonsGrid();
+      if (parentModal) this._renderAdminContent(modal); else this._closeModal();
+    });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') modal.querySelector('#adj-save').click();
+      if (e.key === 'Escape') modal.querySelector('#adj-back').click();
+    });
   }
 
   _openPersonModal(person, parentModal) {
