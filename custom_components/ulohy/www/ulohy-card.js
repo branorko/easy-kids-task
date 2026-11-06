@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.9
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.10
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -260,9 +260,7 @@ const CSS = `
 .who-av img { width: 100%; height: 100%; object-fit: cover; }
 .task-row.is-done .task-name { text-decoration: line-through; color: var(--mu); }
 .task-row.is-done { background: rgba(99,153,34,.06); }
-.awd-row { display: flex; align-items: center; gap: 8px; flex-basis: 100%; }
-.awd-lbl { font-size: 12px; color: var(--mu); }
-.awd-inp { width: 80px !important; text-align: center; padding: 5px 8px !important; }
+.awd-info { font-size: 12px; color: var(--mu); flex-basis: 100%; }
 .confirm-btn {
   font-size: 12px; font-weight: 600; padding: 6px 11px;
   border-radius: var(--rs); border: none; cursor: pointer;
@@ -827,8 +825,7 @@ class UlohyCard extends HTMLElement {
       const editSel = this._whoSel[taskKey] || new Set(doneBy);
       const awarded = getAwarded(task, iso);
       html += this._whoChipsHTML('data-who', taskKey, editSel);
-      html += `<div class="awd-row"><label class="awd-lbl">Body za úlohu</label>
-        <input class="fi awd-inp" type="number" min="0" step="1" data-awarded value="${awarded}"></div>`;
+      if (awarded > 0) html += `<span class="awd-info">⭐ Pridelené body za úlohu: ${awarded} b (rozdelia sa medzi vybraných)</span>`;
       html += `<button class="confirm-btn" data-regrant="${task.id}" ${editSel.size>0?'':'disabled'}>${this._regrantLabel(awarded, editSel.size)}</button>`;
       html += `<button class="act-btn btn-revert" data-action="todo" data-task-id="${task.id}" data-date="${iso}">↺ Označiť ako neurobenú</button>`;
     }
@@ -903,7 +900,7 @@ class UlohyCard extends HTMLElement {
         const rg = row.querySelector('[data-regrant]');
         if (rg) {
           rg.disabled = sel.size === 0;
-          rg.textContent = this._regrantLabel(parseFloat(row.querySelector('[data-awarded]')?.value) || 0, sel.size);
+          rg.textContent = this._regrantLabel(getAwarded(task, iso), sel.size);
         }
       });
     });
@@ -925,21 +922,11 @@ class UlohyCard extends HTMLElement {
         });
       });
     });
-    // zmena počtu bodov – aktualizuj text tlačidla
-    row.querySelectorAll('[data-awarded]').forEach(inp => {
-      inp.addEventListener('input', () => {
-        const rg = row.querySelector('[data-regrant]');
-        const cnt = (this._whoSel[taskKey] || new Set(getDoneBy(task, iso))).size;
-        if (rg) rg.textContent = this._regrantLabel(parseFloat(inp.value) || 0, cnt);
-      });
-    });
     // uložiť zmenu hotovej úlohy
     row.querySelectorAll('[data-regrant]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const newIds = [...(this._whoSel[taskKey] || new Set(getDoneBy(task, iso)))];
-        const raw = parseFloat(row.querySelector('[data-awarded]')?.value);
-        const newPts = isNaN(raw) ? 0 : Math.max(0, Math.round(raw * 10) / 10);
         if (!newIds.length || btn.disabled) return;
         btn.disabled = true;
         delete this._whoSel[taskKey];
@@ -947,13 +934,13 @@ class UlohyCard extends HTMLElement {
           const t = st.tasks.find(x => x.id === task.id);
           if (!t || getOcc(t, iso) !== 'done') return false;
           const oldIds = getDoneBy(t, iso);
-          const oldPts = getAwarded(t, iso);
-          const same = oldPts === newPts && oldIds.length === newIds.length && newIds.every(id => oldIds.includes(id));
+          const pts = getAwarded(t, iso);                       // počet bodov sa nemení
+          const same = oldIds.length === newIds.length && newIds.every(id => oldIds.includes(id));
           if (same) return false;
-          this._regrantPoints(oldIds, oldPts, newIds, newPts, t.name);
+          this._regrantPoints(oldIds, pts, newIds, pts, t.name);
           setOcc(t, iso, 'done', newIds);
           if (!t.awarded) t.awarded = {};
-          t.awarded[`${t.id}_${iso}`] = newPts;
+          t.awarded[`${t.id}_${iso}`] = pts;
         });
       });
     });
@@ -1087,8 +1074,7 @@ class UlohyCard extends HTMLElement {
       const editSel = this._whoSel[taskKey] || new Set(pt.doneBy || []);
       const awarded = getPermAwarded(pt);
       html += this._whoChipsHTML('data-who-perm', taskKey, editSel);
-      html += `<div class="awd-row"><label class="awd-lbl">Body za úlohu</label>
-        <input class="fi awd-inp" type="number" min="0" step="1" data-awarded-perm value="${awarded}"></div>`;
+      if (awarded > 0) html += `<span class="awd-info">⭐ Pridelené body za úlohu: ${awarded} b (rozdelia sa medzi vybraných)</span>`;
       html += `<button class="confirm-btn" data-regrant-perm="${pt.id}" ${editSel.size>0?'':'disabled'}>${this._regrantLabel(awarded, editSel.size)}</button>`;
       html += `<button class="act-btn btn-revert" data-revert-perm="${pt.id}">↺ Označiť ako neurobenú</button>`;
     }
@@ -1135,7 +1121,7 @@ class UlohyCard extends HTMLElement {
         const rg = row.querySelector('[data-regrant-perm]');
         if (rg) {
           rg.disabled = sel.size === 0;
-          rg.textContent = this._regrantLabel(parseFloat(row.querySelector('[data-awarded-perm]')?.value) || 0, sel.size);
+          rg.textContent = this._regrantLabel(getPermAwarded(pt), sel.size);
         }
       });
     });
@@ -1155,19 +1141,10 @@ class UlohyCard extends HTMLElement {
         });
       });
     });
-    row.querySelectorAll('[data-awarded-perm]').forEach(inp => {
-      inp.addEventListener('input', () => {
-        const rg = row.querySelector('[data-regrant-perm]');
-        const cnt = (this._whoSel[taskKey] || new Set(pt.doneBy || [])).size;
-        if (rg) rg.textContent = this._regrantLabel(parseFloat(inp.value) || 0, cnt);
-      });
-    });
     row.querySelectorAll('[data-regrant-perm]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const newIds = [...(this._whoSel[taskKey] || new Set(pt.doneBy || []))];
-        const raw = parseFloat(row.querySelector('[data-awarded-perm]')?.value);
-        const newPts = isNaN(raw) ? 0 : Math.max(0, Math.round(raw * 10) / 10);
         if (!newIds.length || btn.disabled) return;
         btn.disabled = true;
         delete this._whoSel[taskKey];
@@ -1175,12 +1152,12 @@ class UlohyCard extends HTMLElement {
           const q = st.permanentTasks.find(x => x.id === pt.id);
           if (!q || !q.done) return false;
           const oldIds = q.doneBy || [];
-          const oldPts = getPermAwarded(q);
-          const same = oldPts === newPts && oldIds.length === newIds.length && newIds.every(id => oldIds.includes(id));
+          const pts = getPermAwarded(q);                        // počet bodov sa nemení
+          const same = oldIds.length === newIds.length && newIds.every(id => oldIds.includes(id));
           if (same) return false;
-          this._regrantPoints(oldIds, oldPts, newIds, newPts, q.name);
+          this._regrantPoints(oldIds, pts, newIds, pts, q.name);
           q.doneBy = newIds;
-          q.awarded = newPts;
+          q.awarded = pts;
         });
       });
     });
@@ -1217,16 +1194,25 @@ class UlohyCard extends HTMLElement {
     document.body.querySelector('#ulohy-spend-ov')?.remove();
     const ov = document.createElement('div');
     ov.id = 'ulohy-spend-ov';
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;font-family:system-ui,sans-serif;';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;font-family:var(--primary-font-family,system-ui,sans-serif);';
+    // Farby berieme z témy HA (tmavá aj svetlá) – text a pozadie vždy tvoria dvojicu s dobrým kontrastom
+    const T = {
+      card:  'var(--card-background-color,#fff)',
+      text:  'var(--primary-text-color,#212121)',
+      muted: 'var(--secondary-text-color,#757575)',
+      field: 'var(--secondary-background-color,#f5f5f5)',
+      line:  'var(--divider-color,#bdbdbd)',
+      acc:   'var(--primary-color,#1976d2)'
+    };
     ov.innerHTML = `
-      <div style="background:#fff;border-radius:12px;padding:24px;width:min(300px,90vw);box-shadow:0 8px 32px rgba(0,0,0,.22);">
-        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:#212121;">Ahoj, ${person.name}!</div>
-        <div style="font-size:12px;color:#757575;margin-bottom:16px;">Máš <strong>${person.points||0} bodov</strong>. Koľko bodov chceš využiť?</div>
+      <div style="background:${T.card};color:${T.text};border-radius:12px;padding:24px;width:min(300px,90vw);box-shadow:0 8px 32px rgba(0,0,0,.35);">
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:${T.text};">Ahoj, ${person.name}!</div>
+        <div style="font-size:12px;color:${T.muted};margin-bottom:16px;">Máš <strong style="color:${T.text}">${person.points||0} bodov</strong>. Koľko bodov chceš využiť?</div>
         <input id="_sa" type="number" min="1" step="1" placeholder="Počet bodov"
-          style="width:100%;padding:10px;font-size:20px;font-weight:700;text-align:center;border:2px solid #1976d2;border-radius:8px;outline:none;color:#212121;box-sizing:border-box;margin-bottom:16px;">
+          style="width:100%;padding:10px;font-size:20px;font-weight:700;text-align:center;border:2px solid ${T.acc};border-radius:8px;outline:none;background:${T.field};color:${T.text};box-sizing:border-box;margin-bottom:16px;">
         <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button id="_sc" style="padding:8px 16px;border:1px solid #ccc;border-radius:8px;background:none;cursor:pointer;font-size:13px;font-family:inherit;">Zrušiť</button>
-          <button id="_so" style="padding:8px 16px;border:none;border-radius:8px;background:#1976d2;color:#fff;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;">Využiť</button>
+          <button id="_sc" style="padding:8px 16px;border:1px solid ${T.line};border-radius:8px;background:${T.field};color:${T.text};cursor:pointer;font-size:13px;font-family:inherit;">Zrušiť</button>
+          <button id="_so" style="padding:8px 16px;border:none;border-radius:8px;background:${T.acc};color:#fff;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;">Využiť</button>
         </div>
       </div>`;
     document.body.appendChild(ov);
