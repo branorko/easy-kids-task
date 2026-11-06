@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.storage import Store
 from homeassistant.components.frontend import add_extra_js_url
@@ -72,7 +72,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def _register_when_ready(event=None):
         await _async_register_lovelace_resource(hass)
 
-    hass.bus.async_listen_once("homeassistant_started", _register_when_ready)
+    if hass.state is CoreState.running:
+        # integrácia sa načítala až po štarte (napr. reload) – event už nepríde
+        hass.async_create_task(_register_when_ready())
+    else:
+        hass.bus.async_listen_once("homeassistant_started", _register_when_ready)
+
+    _LOGGER.info("[ulohy] v%s načítaná", await hass.async_add_executor_job(_read_version))
     return True
 
 
@@ -86,26 +92,65 @@ def _read_version() -> str:
         return "0"
 
 
+def _find_resources_collection(hass: HomeAssistant):
+    """Živá kolekcia Lovelace zdrojov (None ak dashboardy bežia v YAML režime)."""
+    ll = hass.data.get("lovelace")
+    if ll is None:
+        return None
+    res = ll.get("resources") if isinstance(ll, dict) else getattr(ll, "resources", None)
+    return res if hasattr(res, "async_create_item") else None
+
+
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Zaregistruje / aktualizuje zdroj karty. Verzia v URL = verzia z manifest.json."""
+    version = await hass.async_add_executor_job(_read_version)
+    resource_url = f"{LOVELACE_RESOURCE_URL}?v={version}"
+
+    # 1) Preferované: priamo cez živú kolekciu HA – zmena sa prejaví hneď a HA ju
+    #    nemôže neskôr prepísať svojou kópiou v pamäti.
     try:
-        version = await hass.async_add_executor_job(_read_version)
-        resource_url = f"{LOVELACE_RESOURCE_URL}?v={version}"
+        resources = _find_resources_collection(hass)
+        if resources is not None:
+            if not getattr(resources, "loaded", True):
+                await resources.async_load()
+                resources.loaded = True
+            existing = next(
+                (i for i in resources.async_items() if LOVELACE_RESOURCE_URL in i.get("url", "")),
+                None,
+            )
+            if existing is None:
+                await resources.async_create_item({"res_type": "module", "url": resource_url})
+                _LOGGER.info("[ulohy] Lovelace resource pridaný: %s", resource_url)
+            elif existing.get("url") != resource_url:
+                await resources.async_update_item(
+                    existing["id"], {"res_type": "module", "url": resource_url}
+                )
+                _LOGGER.info("[ulohy] Lovelace resource aktualizovaný: %s", resource_url)
+            else:
+                _LOGGER.info("[ulohy] Lovelace resource je aktuálny: %s", resource_url)
+            return
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.warning("[ulohy] Registrácia cez živú kolekciu zlyhala (%s), skúšam súbor", e)
+
+    # 2) Záloha: zápis priamo do .storage/lovelace_resources
+    try:
         resources_store = Store(hass, 1, "lovelace_resources")
         resources_data = await resources_store.async_load() or {"items": []}
         items = resources_data.get("items", [])
-
         existing = next((i for i in items if LOVELACE_RESOURCE_URL in i.get("url", "")), None)
 
         if existing is None:
             items.append({"id": uuid.uuid4().hex, "type": "module", "url": resource_url})
             resources_data["items"] = items
             await resources_store.async_save(resources_data)
-            _LOGGER.info("[ulohy] Lovelace resource pridaný: %s", resource_url)
+            _LOGGER.info("[ulohy] Lovelace resource pridaný (súbor): %s", resource_url)
         elif existing.get("url") != resource_url:
             existing["url"] = resource_url
             await resources_store.async_save(resources_data)
-            _LOGGER.info("[ulohy] Lovelace resource aktualizovaný: %s", resource_url)
-    except Exception as e:
+            _LOGGER.info("[ulohy] Lovelace resource aktualizovaný (súbor): %s", resource_url)
+        else:
+            _LOGGER.info("[ulohy] Lovelace resource je aktuálny (súbor): %s", resource_url)
+    except Exception as e:  # noqa: BLE001
         _LOGGER.warning("[ulohy] Registrácia resource zlyhala: %s", e)
 
 
