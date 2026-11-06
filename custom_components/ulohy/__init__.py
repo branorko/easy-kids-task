@@ -1,6 +1,7 @@
 """Úlohy pre domácnosť – Home Assistant integrácia."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -17,7 +18,6 @@ DOMAIN = "ulohy"
 STORAGE_KEY = "ulohy.data"
 STORAGE_VERSION = 1
 LOVELACE_RESOURCE_URL = "/ulohy_static/ulohy-card.js"
-LOVELACE_RESOURCE_VERSION = 11
 
 DEFAULT_DATA = {
     "persons": [],
@@ -76,9 +76,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+def _read_version() -> str:
+    """Verzia z manifest.json – jediný zdroj pravdy pre číslovanie."""
+    try:
+        path = os.path.join(os.path.dirname(__file__), "manifest.json")
+        with open(path, encoding="utf-8") as f:
+            return str(json.load(f).get("version", "0"))
+    except Exception:  # noqa: BLE001
+        return "0"
+
+
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     try:
-        resource_url = f"{LOVELACE_RESOURCE_URL}?v={LOVELACE_RESOURCE_VERSION}"
+        version = await hass.async_add_executor_job(_read_version)
+        resource_url = f"{LOVELACE_RESOURCE_URL}?v={version}"
         resources_store = Store(hass, 1, "lovelace_resources")
         resources_data = await resources_store.async_load() or {"items": []}
         items = resources_data.get("items", [])
