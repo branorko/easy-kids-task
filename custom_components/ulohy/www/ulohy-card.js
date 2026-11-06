@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.6
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.7
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -1321,6 +1321,7 @@ class UlohyCard extends HTMLElement {
             <span class="person-chip-name">${p.name}</span>
             <span class="person-chip-pts">⭐ ${pts} b</span>
             <button class="edit-ic" data-adj-person="${p.id}" title="Upraviť body">🪙</button>
+            <button class="edit-ic" data-clear-log="${p.id}" title="Vynulovať históriu bodov">🧹</button>
             <button class="edit-ic" data-edit-person="${p.id}" title="Upraviť osobu">✎</button>
             <button class="del-ic" data-del-person="${p.id}" title="Zmazať">✕</button>
           </div>`;
@@ -1347,6 +1348,20 @@ class UlohyCard extends HTMLElement {
       this._adminOn=false;
       this.shadowRoot.querySelector('#btn-admin').classList.remove('on');
       this._closeModal(); this._renderPersonsGrid();
+    });
+    modal.querySelectorAll('[data-clear-log]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid = btn.dataset.clearLog;
+        const p = this._state.persons.find(x => x.id === pid);
+        if (!p) return;
+        const cnt = ((this._state.pointsLog||{})[pid] || []).length;
+        if (cnt === 0) { alert('História bodov pre ' + p.name + ' je už prázdna.'); return; }
+        if (!confirm('Vymazať celú históriu bodov pre ' + p.name + ' (' + cnt + ' záznamov)?\n\nAktuálny zostatok ' + (p.points||0) + ' b zostane zachovaný.')) return;
+        this._tx(st => {
+          if (!st.pointsLog) st.pointsLog = {};
+          st.pointsLog[pid] = [];
+        }).then(() => this._renderAdminContent(modal));
+      });
     });
     modal.querySelectorAll('[data-adj-person]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1467,4 +1482,4 @@ class UlohyCard extends HTMLElement {
   _closeModal()  { this.shadowRoot.querySelector('#overlay').classList.remove('open'); }
 }
 
-customElements.define('ulohy-card', UlohyCard);
+if (!customElements.get('ulohy-card')) customElements.define('ulohy-card', UlohyCard);
