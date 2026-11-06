@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.5
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.6
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -453,6 +453,9 @@ class UlohyCard extends HTMLElement {
     this._saving    = '';
     this._showChecked = false;
     this._whoSel    = {};   // taskKey → Set of personIds
+    this._txChain   = Promise.resolve();  // fronta transakcií
+    this._busy      = 0;      // počet prebiehajúcich zápisov
+    this._loadFailed = false; // ak načítanie zlyhalo, nikdy neprepisuj server
   }
 
   set hass(h) {
@@ -467,41 +470,87 @@ class UlohyCard extends HTMLElement {
   }
 
   // ── Storage ──────────────────────────────────────────────────────────────
+  _migrate(st) {
+    if (!Array.isArray(st.persons)) st.persons = [];
+    if (!Array.isArray(st.tasks)) st.tasks = [];
+    if (!st.permanentTasks) st.permanentTasks = [];
+    if (!st.pointsLog) st.pointsLog = {};
+    if (!st.settings) st.settings = { showChecked: false };
+    for (const p of st.persons) { if (p.points === undefined) p.points = 0; }
+    return st;
+  }
+
   async _load() {
     try {
       const r = await this._hass.callApi('GET', 'ulohy/data');
       if (r && typeof r === 'object') this._state = r;
-    } catch(e) { console.warn('[ulohy] load error', e); }
+      else this._loadFailed = true;
+    } catch(e) { console.warn('[ulohy] load error', e); this._loadFailed = true; }
     if (!this._state) this._state = this._empty();
-    // migrácia
-    if (!this._state.permanentTasks) this._state.permanentTasks = [];
-    if (!this._state.pointsLog) this._state.pointsLog = {};
-    for (const p of this._state.persons) {
-      if (p.points === undefined) p.points = 0;
-    }
+    this._migrate(this._state);
     this._render();
     if (this._pollTimer) clearInterval(this._pollTimer);
     this._pollTimer = setInterval(() => this._poll(), POLL_MS);
   }
 
+  // Poll sa nesmie dotknúť stavu ak používateľ práve niečo robí
+  _pollBlocked() {
+    return this._busy > 0
+      || !!this.shadowRoot.querySelector('.task-row.open')
+      || !!this.shadowRoot.querySelector('#overlay.open')
+      || !!document.body.querySelector('#ulohy-spend-ov');
+  }
+
   async _poll() {
+    if (this._pollBlocked()) return;
     try {
       const r = await this._hass.callApi('GET', 'ulohy/data');
+      // medzitým mohlo začať ukladanie / otvoriť sa okno → výsledok zahodiť
+      if (this._pollBlocked()) return;
       if (r && typeof r === 'object') {
-        this._state = r;
-        // Neprerender ak je otvorený nejaký detail – zavrel by ho
-        const hasOpen = this.shadowRoot.querySelector('.task-row.open');
-        if (!hasOpen) this._renderPersonsGrid();
+        this._state = this._migrate(r);
+        this._loadFailed = false;
+        this._renderPersonsGrid();
       }
     } catch(e) {}
   }
 
+  // Transakcia: načíta ČERSTVÉ dáta zo servera, zmenu aplikuje cez ID a uloží.
+  // fn(state) môže vrátiť false = nič sa nezmenilo (nič sa neukladá).
+  _tx(fn) {
+    this._txChain = this._txChain.then(async () => {
+      this._busy++;
+      this._setSaving('Ukladám…');
+      try {
+        const r = await this._hass.callApi('GET', 'ulohy/data');
+        if (!r || typeof r !== 'object' || !Array.isArray(r.persons)) throw new Error('neplatné dáta zo servera');
+        this._state = this._migrate(r);
+        this._loadFailed = false;
+        if (fn(this._state) === false) { this._setSaving(''); return; }
+        await this._hass.callApi('POST', 'ulohy/data', this._state);
+        this._setSaving('Uložené ✓');
+      } catch(e) {
+        console.error('[ulohy] transakcia zlyhala', e);
+        this._setSaving('Chyba – zmena sa neuložila!');
+      } finally {
+        this._busy--;
+        setTimeout(() => this._setSaving(''), 2500);
+        this._renderPersonsGrid();
+        this._renderPermSection();
+      }
+    });
+    return this._txChain;
+  }
+
   async _save() {
+    if (this._loadFailed) { this._setSaving('Dáta sa nenačítali – ukladanie zablokované'); return; }
+    this._busy++;
     this._setSaving('Ukladám…');
     try {
       await this._hass.callApi('POST', 'ulohy/data', this._state);
       this._setSaving('Uložené ✓');
     } catch(e) { this._setSaving('Chyba!'); }
+    finally { this._busy--; }
     setTimeout(() => this._setSaving(''), 2000);
   }
 
@@ -849,26 +898,34 @@ class UlohyCard extends HTMLElement {
     row.querySelectorAll('[data-confirm]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
-        // Guard: ak už je done (napr. double-click), nepripisuj body znova
-        if (getOcc(task, iso) === 'done') return;
         const doneBy = [...(this._whoSel[taskKey] || new Set())];
-        if (doneBy.length === 0) return;
-        setOcc(task, iso, 'done', doneBy);
-        this._addPoints(doneBy, task.points||0, task.name);
+        if (doneBy.length === 0 || btn.disabled) return;
+        btn.disabled = true;
         delete this._whoSel[taskKey];
-        this._save(); this._renderPersonsGrid();
+        this._tx(st => {
+          const t = st.tasks.find(x => x.id === task.id);
+          if (!t || getOcc(t, iso) === 'done') return false;   // idempotentné
+          setOcc(t, iso, 'done', doneBy);
+          this._addPoints(doneBy, t.points||0, t.name);
+        });
       });
     });
     // revert
     row.querySelectorAll('[data-action]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
-        if (btn.dataset.action === 'todo') {
-          const prev = getDoneBy(task, iso);
-          if (prev.length) this._removePoints(prev, task.points||0, task.name);
-        }
-        setOcc(task, iso, btn.dataset.action, []);
-        this._save(); this._renderPersonsGrid();
+        const action = btn.dataset.action;
+        btn.disabled = true;
+        this._tx(st => {
+          const t = st.tasks.find(x => x.id === task.id);
+          if (!t) return false;
+          if (action === 'todo') {
+            if (getOcc(t, iso) !== 'done') return false;       // už vrátená – neodpočítaj dvakrát
+            const prev = getDoneBy(t, iso);
+            if (prev.length) this._removePoints(prev, t.points||0, t.name);
+          }
+          setOcc(t, iso, action, []);
+        });
       });
     });
     // edit
@@ -997,18 +1054,27 @@ class UlohyCard extends HTMLElement {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const doneBy = [...(this._whoSel[taskKey]||new Set())];
-        pt.done=true; pt.doneBy=doneBy;
-        if (doneBy.length) this._addPoints(doneBy, pt.points||0, pt.name);
+        if (!doneBy.length || btn.disabled) return;
+        btn.disabled = true;
         delete this._whoSel[taskKey];
-        this._save(); this._renderPermSection();
+        this._tx(st => {
+          const q = st.permanentTasks.find(x => x.id === pt.id);
+          if (!q || q.done) return false;
+          q.done = true; q.doneBy = doneBy;
+          this._addPoints(doneBy, q.points||0, q.name);
+        });
       });
     });
     row.querySelectorAll('[data-revert-perm]').forEach(btn => {
       btn.addEventListener('click', e => {
         e.stopPropagation();
-        if (pt.doneBy?.length) this._removePoints(pt.doneBy, pt.points||0, pt.name);
-        pt.done=false; pt.doneBy=[];
-        this._save(); this._renderPermSection();
+        btn.disabled = true;
+        this._tx(st => {
+          const q = st.permanentTasks.find(x => x.id === pt.id);
+          if (!q || !q.done) return false;
+          if (q.doneBy?.length) this._removePoints(q.doneBy, q.points||0, q.name);
+          q.done = false; q.doneBy = [];
+        });
       });
     });
     row.querySelectorAll('[data-edit-perm]').forEach(btn => {
@@ -1026,6 +1092,9 @@ class UlohyCard extends HTMLElement {
 
   // ── Spend modal ───────────────────────────────────────────────────────────
   _openSpendModal(person) {
+    // vždy pracuj s aktuálnym objektom zo stavu, nie so starou referenciou
+    person = this._state.persons.find(x => x.id === person.id) || person;
+    const personId = person.id;
     document.body.querySelector('#ulohy-spend-ov')?.remove();
     const ov = document.createElement('div');
     ov.id = 'ulohy-spend-ov';
@@ -1045,11 +1114,18 @@ class UlohyCard extends HTMLElement {
     const inp = ov.querySelector('#_sa'); inp.focus();
     ov.querySelector('#_sc').addEventListener('click', () => ov.remove());
     ov.addEventListener('click', e => { if (e.target===ov) ov.remove(); });
+    let spent = false;
     ov.querySelector('#_so').addEventListener('click', () => {
+      if (spent) return;
       const amount = parseFloat(inp.value);
       if (!amount || amount <= 0) { inp.style.borderColor='#E24B4A'; return; }
-      this._spendPoints(person, amount);
-      this._save(); ov.remove(); this._renderPersonsGrid();
+      spent = true;
+      ov.remove();
+      this._tx(st => {
+        const q = st.persons.find(x => x.id === personId);
+        if (!q) return false;
+        this._spendPoints(q, amount);
+      });
     });
     inp.addEventListener('keydown', e => {
       if (e.key==='Enter') ov.querySelector('#_so').click();
@@ -1292,6 +1368,7 @@ class UlohyCard extends HTMLElement {
   }
 
   _openAdjPointsModal(person, parentModal) {
+    person = this._state.persons.find(x => x.id === person.id) || person;
     const modal = this.shadowRoot.querySelector('#modal');
     const pts   = person.points || 0;
 
@@ -1319,9 +1396,14 @@ class UlohyCard extends HTMLElement {
     modal.querySelector('#adj-save').addEventListener('click', () => {
       const delta = parseFloat(inp.value);
       if (!delta || isNaN(delta)) { inp.style.borderColor = '#E24B4A'; return; }
-      this._adminAdjust(person, delta);
-      this._save(); this._renderPersonsGrid();
-      if (parentModal) this._renderAdminContent(modal); else this._closeModal();
+      const personId = person.id;
+      this._tx(st => {
+        const q = st.persons.find(x => x.id === personId);
+        if (!q) return false;
+        this._adminAdjust(q, delta);
+      }).then(() => {
+        if (parentModal) this._renderAdminContent(modal); else this._closeModal();
+      });
     });
     inp.addEventListener('keydown', e => {
       if (e.key === 'Enter') modal.querySelector('#adj-save').click();
