@@ -1,5 +1,5 @@
 /**
- * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.8
+ * ulohy-card.js  –  Úlohy pre domácnosť  v2.5.9
  * Každá osoba má vlastnú farebnú kartu.
  * Novinky v2.1: bodovací systém, log transakcií, stály zoznam, výber kto urobil
  */
@@ -73,6 +73,12 @@ function setOcc(task, iso, st, doneBy) {
   if (doneBy !== undefined) task.doneBy[`${task.id}_${iso}`] = doneBy;
 }
 function getDoneBy(task, iso) { return (task.doneBy||{})[`${task.id}_${iso}`] || []; }
+// Body, ktoré boli pri splnení skutočne pridelené (fallback na aktuálnu hodnotu pre staré záznamy)
+function getAwarded(task, iso) {
+  const v = (task.awarded||{})[`${task.id}_${iso}`];
+  return v !== undefined ? v : (task.points||0);
+}
+function getPermAwarded(pt) { return pt.awarded !== undefined ? pt.awarded : (pt.points||0); }
 
 const REPEAT_LABEL = { none:'Jednorazová', daily:'Denne', weekly:'Týždenne', monthly:'Mesačne', yearly:'Ročne' };
 const DOW_LABEL    = ['Ne','Po','Ut','St','Št','Pi','So'];
@@ -252,6 +258,11 @@ const CSS = `
   justify-content: center; font-size: 9px; font-weight: 700; overflow: hidden;
 }
 .who-av img { width: 100%; height: 100%; object-fit: cover; }
+.task-row.is-done .task-name { text-decoration: line-through; color: var(--mu); }
+.task-row.is-done { background: rgba(99,153,34,.06); }
+.awd-row { display: flex; align-items: center; gap: 8px; flex-basis: 100%; }
+.awd-lbl { font-size: 12px; color: var(--mu); }
+.awd-inp { width: 80px !important; text-align: center; padding: 5px 8px !important; }
 .confirm-btn {
   font-size: 12px; font-weight: 600; padding: 6px 11px;
   border-radius: var(--rs); border: none; cursor: pointer;
@@ -451,7 +462,6 @@ class UlohyCard extends HTMLElement {
     this._weekSel   = [];
     this._pollTimer = null;
     this._saving    = '';
-    this._showChecked = false;
     this._whoSel    = {};   // taskKey → Set of personIds
     this._txChain   = Promise.resolve();  // fronta transakcií
     this._busy      = 0;      // počet prebiehajúcich zápisov
@@ -614,7 +624,6 @@ class UlohyCard extends HTMLElement {
             <span class="hdr-title">📋 Úlohy</span>
             <div class="hdr-acts">
               <button class="icon-btn" id="btn-add-task" title="Nová úloha">＋</button>
-              <button class="icon-btn${this._showChecked?' on':''}" id="btn-toggle-done" title="Zobraziť dokončené">✔</button>
               <button class="icon-btn" id="btn-perm" title="Stály zoznam">📌</button>
               <button class="icon-btn" id="btn-admin" title="Admin">⚙</button>
             </div>
@@ -641,12 +650,6 @@ class UlohyCard extends HTMLElement {
         this._viewDate = todayISO(); this._renderPersonsGrid();
       });
       s.querySelector('#btn-add-task').addEventListener('click', () => this._openTaskModal(null));
-      s.querySelector('#btn-toggle-done').addEventListener('click', () => {
-        this._showChecked = !this._showChecked;
-        s.querySelector('#btn-toggle-done').classList.toggle('on', this._showChecked);
-        this._renderPersonsGrid();
-        this._renderPermSection();
-      });
       s.querySelector('#btn-perm').addEventListener('click', () => {
         const sec = s.querySelector('#perm-section');
         const visible = sec.style.display === 'none';
@@ -682,7 +685,7 @@ class UlohyCard extends HTMLElement {
     grid.innerHTML = this._state.persons.map((p, pi) => {
       const pal    = PALETTE[p.colorIdx !== undefined ? p.colorIdx % PALETTE.length : pi % PALETTE.length];
       const tasks  = this._state.tasks.filter(t => t.personId === p.id && occurrencesOnDate(t, iso));
-      const visible = tasks.filter(t => this._showChecked || getOcc(t, iso) !== 'done');
+      const visible = tasks;   // hotové úlohy ostávajú viditeľné
       const done   = tasks.filter(t => getOcc(t, iso) !== 'todo').length;
       const pts    = p.points || 0;
 
@@ -784,7 +787,7 @@ class UlohyCard extends HTMLElement {
     const detail = this._taskDetailHTML(task, iso, raw, stDisp);
 
     return `
-      <div class="task-row" data-tid="${task.id}" data-date="${iso}">
+      <div class="task-row${raw==='done'?' is-done':''}" data-tid="${task.id}" data-date="${iso}">
         <div class="task-main">
           <span class="task-dot ${dotCls[stDisp]||'dot-todo'}"></span>
           <span class="task-name">${task.name}</span>
@@ -821,9 +824,13 @@ class UlohyCard extends HTMLElement {
       const hint = pts > 0 && cnt > 0 ? ' (+' + Math.round(pts/cnt*10)/10 + 'b/os.)' : '';
       html += `<button class="confirm-btn" data-confirm="${task.id}" data-date="${iso}" ${cnt > 0 ? '' : 'disabled'}>✓ Potvrdiť urobené${hint}</button>`;
     } else if (raw === 'done') {
-      const names = doneBy.map(id => persons.find(p=>p.id===id)?.name || '?').join(', ');
-      if (names) html += `<span class="done-info">✓ Urobili: ${names}</span>`;
-      html += `<button class="act-btn btn-revert" data-action="todo" data-task-id="${task.id}" data-date="${iso}">Vrátiť</button>`;
+      const editSel = this._whoSel[taskKey] || new Set(doneBy);
+      const awarded = getAwarded(task, iso);
+      html += this._whoChipsHTML('data-who', taskKey, editSel);
+      html += `<div class="awd-row"><label class="awd-lbl">Body za úlohu</label>
+        <input class="fi awd-inp" type="number" min="0" step="1" data-awarded value="${awarded}"></div>`;
+      html += `<button class="confirm-btn" data-regrant="${task.id}" ${editSel.size>0?'':'disabled'}>${this._regrantLabel(awarded, editSel.size)}</button>`;
+      html += `<button class="act-btn btn-revert" data-action="todo" data-task-id="${task.id}" data-date="${iso}">↺ Označiť ako neurobenú</button>`;
     }
 
     if (this._adminOn) {
@@ -845,6 +852,7 @@ class UlohyCard extends HTMLElement {
           const task = this._state.tasks.find(t => t.id === row.dataset.tid);
           const iso  = row.dataset.date;
           if (task) {
+            if (getOcc(task, iso) === 'done') delete this._whoSel[task.id + '_' + iso];
             // Vyčisti staré listenery nahradením nódu klonom
             const oldDetail = row.querySelector('.task-detail');
             const newDetail = oldDetail.cloneNode(false);
@@ -881,7 +889,7 @@ class UlohyCard extends HTMLElement {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const pid = btn.dataset.pid;
-        if (!this._whoSel[taskKey]) this._whoSel[taskKey] = new Set();
+        if (!this._whoSel[taskKey]) this._whoSel[taskKey] = new Set(getOcc(task, iso) === 'done' ? getDoneBy(task, iso) : []);
         const sel = this._whoSel[taskKey];
         if (sel.has(pid)) sel.delete(pid); else sel.add(pid);
         btn.classList.toggle('sel', sel.has(pid));
@@ -891,6 +899,11 @@ class UlohyCard extends HTMLElement {
           const hint = pts > 0 && cnt > 0 ? ' (+'+Math.round(pts/cnt*10)/10+'b/os.)' : '';
           cb.disabled = cnt === 0;
           cb.textContent = '✓ Potvrdiť urobené' + hint;
+        }
+        const rg = row.querySelector('[data-regrant]');
+        if (rg) {
+          rg.disabled = sel.size === 0;
+          rg.textContent = this._regrantLabel(parseFloat(row.querySelector('[data-awarded]')?.value) || 0, sel.size);
         }
       });
     });
@@ -906,7 +919,41 @@ class UlohyCard extends HTMLElement {
           const t = st.tasks.find(x => x.id === task.id);
           if (!t || getOcc(t, iso) === 'done') return false;   // idempotentné
           setOcc(t, iso, 'done', doneBy);
+          if (!t.awarded) t.awarded = {};
+          t.awarded[`${t.id}_${iso}`] = t.points||0;           // koľko sa skutočne pridelilo
           this._addPoints(doneBy, t.points||0, t.name);
+        });
+      });
+    });
+    // zmena počtu bodov – aktualizuj text tlačidla
+    row.querySelectorAll('[data-awarded]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const rg = row.querySelector('[data-regrant]');
+        const cnt = (this._whoSel[taskKey] || new Set(getDoneBy(task, iso))).size;
+        if (rg) rg.textContent = this._regrantLabel(parseFloat(inp.value) || 0, cnt);
+      });
+    });
+    // uložiť zmenu hotovej úlohy
+    row.querySelectorAll('[data-regrant]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const newIds = [...(this._whoSel[taskKey] || new Set(getDoneBy(task, iso)))];
+        const raw = parseFloat(row.querySelector('[data-awarded]')?.value);
+        const newPts = isNaN(raw) ? 0 : Math.max(0, Math.round(raw * 10) / 10);
+        if (!newIds.length || btn.disabled) return;
+        btn.disabled = true;
+        delete this._whoSel[taskKey];
+        this._tx(st => {
+          const t = st.tasks.find(x => x.id === task.id);
+          if (!t || getOcc(t, iso) !== 'done') return false;
+          const oldIds = getDoneBy(t, iso);
+          const oldPts = getAwarded(t, iso);
+          const same = oldPts === newPts && oldIds.length === newIds.length && newIds.every(id => oldIds.includes(id));
+          if (same) return false;
+          this._regrantPoints(oldIds, oldPts, newIds, newPts, t.name);
+          setOcc(t, iso, 'done', newIds);
+          if (!t.awarded) t.awarded = {};
+          t.awarded[`${t.id}_${iso}`] = newPts;
         });
       });
     });
@@ -922,7 +969,8 @@ class UlohyCard extends HTMLElement {
           if (action === 'todo') {
             if (getOcc(t, iso) !== 'done') return false;       // už vrátená – neodpočítaj dvakrát
             const prev = getDoneBy(t, iso);
-            if (prev.length) this._removePoints(prev, t.points||0, t.name);
+            if (prev.length) this._removePoints(prev, getAwarded(t, iso), t.name);
+            if (t.awarded) delete t.awarded[`${t.id}_${iso}`];
           }
           setOcc(t, iso, action, []);
         });
@@ -946,6 +994,37 @@ class UlohyCard extends HTMLElement {
     });
   }
 
+  // Výber osôb ako tlačidlá (attr = data-who / data-who-perm)
+  _whoChipsHTML(attr, taskKey, selSet) {
+    const persons = this._state.persons;
+    if (!persons.length) return '';
+    let h = `<span class="who-lbl">Kto úlohu urobil?</span><div class="who-grid">`;
+    for (const p of persons) {
+      const av = p.avatar ? `<img src="${p.avatar}">` : this._initials(p.name);
+      h += `<button class="who-btn${selSet.has(p.id)?' sel':''}" ${attr}="${taskKey}" data-pid="${p.id}"><span class="who-av">${av}</span>${p.name}</button>`;
+    }
+    return h + `</div>`;
+  }
+
+  _regrantLabel(pts, cnt) {
+    const per = pts > 0 && cnt > 0 ? ' (' + Math.round(pts/cnt*10)/10 + 'b/os.)' : '';
+    return '✓ Uložiť zmenu' + per;
+  }
+
+  // Prerozdelenie bodov: každej osobe sa zapíše JEDEN záznam s čistým rozdielom
+  _regrantPoints(oldIds, oldPts, newIds, newPts, taskName) {
+    const oldShare = oldIds.length ? oldPts / oldIds.length : 0;
+    const newShare = newIds.length ? newPts / newIds.length : 0;
+    for (const pid of new Set([...oldIds, ...newIds])) {
+      const p = this._state.persons.find(x => x.id === pid);
+      if (!p) continue;
+      const net = Math.round(((newIds.includes(pid) ? newShare : 0) - (oldIds.includes(pid) ? oldShare : 0)) * 10) / 10;
+      if (net === 0) continue;
+      p.points = Math.round(((p.points||0) + net) * 10) / 10;
+      this._logEntry(pid, 'Úprava: ' + (taskName||'Úloha'), net, p.points);
+    }
+  }
+
   _initials(name) {
     return name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
   }
@@ -955,7 +1034,7 @@ class UlohyCard extends HTMLElement {
     const sec = this.shadowRoot.querySelector('#perm-section');
     if (!sec || sec.style.display === 'none') return;
     const tasks = this._state.permanentTasks || [];
-    const vis   = tasks.filter(pt => this._showChecked || !pt.done);
+    const vis   = tasks;   // hotové úlohy ostávajú viditeľné
     let html = `<div class="perm-title">📌 Stály zoznam</div>`;
     if (vis.length === 0) {
       html += `<div class="empty" style="padding:16px 0">Žiadne stále úlohy</div>`;
@@ -972,7 +1051,7 @@ class UlohyCard extends HTMLElement {
     const isDone = pt.done || false;
     const ptag   = pt.points ? `<span class="task-ptag">⭐ ${pt.points}b</span>` : '';
     return `
-      <div class="task-row" data-perm-id="${pt.id}">
+      <div class="task-row${isDone?' is-done':''}" data-perm-id="${pt.id}">
         <div class="task-main">
           <span class="task-dot ${isDone?'dot-done':'dot-todo'}"></span>
           <span class="task-name">${pt.name}</span>
@@ -1005,9 +1084,13 @@ class UlohyCard extends HTMLElement {
       const hint = pts > 0 && cnt > 0 ? ' (+'+Math.round(pts/cnt*10)/10+'b/os.)' : '';
       html += `<button class="confirm-btn" data-confirm-perm="${pt.id}" ${cnt>0?'':'disabled'}>✓ Potvrdiť urobené${hint}</button>`;
     } else {
-      const names = (pt.doneBy||[]).map(id => persons.find(p=>p.id===id)?.name||'?').join(', ');
-      if (names) html += `<span class="done-info">✓ Urobili: ${names}</span>`;
-      html += `<button class="act-btn btn-revert" data-revert-perm="${pt.id}">Vrátiť</button>`;
+      const editSel = this._whoSel[taskKey] || new Set(pt.doneBy || []);
+      const awarded = getPermAwarded(pt);
+      html += this._whoChipsHTML('data-who-perm', taskKey, editSel);
+      html += `<div class="awd-row"><label class="awd-lbl">Body za úlohu</label>
+        <input class="fi awd-inp" type="number" min="0" step="1" data-awarded-perm value="${awarded}"></div>`;
+      html += `<button class="confirm-btn" data-regrant-perm="${pt.id}" ${editSel.size>0?'':'disabled'}>${this._regrantLabel(awarded, editSel.size)}</button>`;
+      html += `<button class="act-btn btn-revert" data-revert-perm="${pt.id}">↺ Označiť ako neurobenú</button>`;
     }
     if (this._adminOn) {
       html += `<div class="admin-acts">
@@ -1024,6 +1107,7 @@ class UlohyCard extends HTMLElement {
         row.classList.toggle('open');
         if (row.classList.contains('open')) {
           const pt = this._state.permanentTasks.find(x => x.id === row.dataset.permId);
+          if (pt && pt.done) delete this._whoSel['perm_' + pt.id];
           if (pt) { row.querySelector('.task-detail').innerHTML = this._permDetailHTML(pt); this._attachPermDetail(row, pt); }
         }
       });
@@ -1038,7 +1122,7 @@ class UlohyCard extends HTMLElement {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const pid = btn.dataset.pid;
-        if (!this._whoSel[taskKey]) this._whoSel[taskKey] = new Set();
+        if (!this._whoSel[taskKey]) this._whoSel[taskKey] = new Set(pt.done ? (pt.doneBy || []) : []);
         const sel = this._whoSel[taskKey];
         if (sel.has(pid)) sel.delete(pid); else sel.add(pid);
         btn.classList.toggle('sel', sel.has(pid));
@@ -1047,6 +1131,11 @@ class UlohyCard extends HTMLElement {
           const pts=pt.points||0; const cnt=sel.size;
           const hint = pts>0&&cnt>0 ? ' (+'+Math.round(pts/cnt*10)/10+'b/os.)' : '';
           cb.disabled=cnt===0; cb.textContent='✓ Potvrdiť urobené'+hint;
+        }
+        const rg = row.querySelector('[data-regrant-perm]');
+        if (rg) {
+          rg.disabled = sel.size === 0;
+          rg.textContent = this._regrantLabel(parseFloat(row.querySelector('[data-awarded-perm]')?.value) || 0, sel.size);
         }
       });
     });
@@ -1061,7 +1150,37 @@ class UlohyCard extends HTMLElement {
           const q = st.permanentTasks.find(x => x.id === pt.id);
           if (!q || q.done) return false;
           q.done = true; q.doneBy = doneBy;
+          q.awarded = q.points||0;
           this._addPoints(doneBy, q.points||0, q.name);
+        });
+      });
+    });
+    row.querySelectorAll('[data-awarded-perm]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const rg = row.querySelector('[data-regrant-perm]');
+        const cnt = (this._whoSel[taskKey] || new Set(pt.doneBy || [])).size;
+        if (rg) rg.textContent = this._regrantLabel(parseFloat(inp.value) || 0, cnt);
+      });
+    });
+    row.querySelectorAll('[data-regrant-perm]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const newIds = [...(this._whoSel[taskKey] || new Set(pt.doneBy || []))];
+        const raw = parseFloat(row.querySelector('[data-awarded-perm]')?.value);
+        const newPts = isNaN(raw) ? 0 : Math.max(0, Math.round(raw * 10) / 10);
+        if (!newIds.length || btn.disabled) return;
+        btn.disabled = true;
+        delete this._whoSel[taskKey];
+        this._tx(st => {
+          const q = st.permanentTasks.find(x => x.id === pt.id);
+          if (!q || !q.done) return false;
+          const oldIds = q.doneBy || [];
+          const oldPts = getPermAwarded(q);
+          const same = oldPts === newPts && oldIds.length === newIds.length && newIds.every(id => oldIds.includes(id));
+          if (same) return false;
+          this._regrantPoints(oldIds, oldPts, newIds, newPts, q.name);
+          q.doneBy = newIds;
+          q.awarded = newPts;
         });
       });
     });
@@ -1072,8 +1191,8 @@ class UlohyCard extends HTMLElement {
         this._tx(st => {
           const q = st.permanentTasks.find(x => x.id === pt.id);
           if (!q || !q.done) return false;
-          if (q.doneBy?.length) this._removePoints(q.doneBy, q.points||0, q.name);
-          q.done = false; q.doneBy = [];
+          if (q.doneBy?.length) this._removePoints(q.doneBy, getPermAwarded(q), q.name);
+          q.done = false; q.doneBy = []; delete q.awarded;
         });
       });
     });
@@ -1194,7 +1313,8 @@ class UlohyCard extends HTMLElement {
         repeat:     modal.querySelector('#t-repeat').value,
         repeatDays: this._weekSel.slice().sort(),
         occurrences: task?.occurrences || {},
-        doneBy:     task?.doneBy || {}
+        doneBy:     task?.doneBy || {},
+        awarded:    task?.awarded || {}
       };
       if (isEdit) { const i=this._state.tasks.findIndex(t=>t.id===obj.id); if(i>=0) this._state.tasks[i]=obj; }
       else this._state.tasks.push(obj);
@@ -1229,7 +1349,7 @@ class UlohyCard extends HTMLElement {
     modal.querySelector('#pt-save').addEventListener('click', () => {
       const name = modal.querySelector('#pt-name').value.trim();
       if (!name) return;
-      const obj = { id:pt?.id||uid(), name, note:modal.querySelector('#pt-note').value.trim(), points:parseInt(modal.querySelector('#pt-points').value)||0, done:pt?.done||false, doneBy:pt?.doneBy||[] };
+      const obj = { id:pt?.id||uid(), name, note:modal.querySelector('#pt-note').value.trim(), points:parseInt(modal.querySelector('#pt-points').value)||0, done:pt?.done||false, doneBy:pt?.doneBy||[], awarded:pt?.awarded };
       if (isEdit) { const i=this._state.permanentTasks.findIndex(x=>x.id===obj.id); if(i>=0) this._state.permanentTasks[i]=obj; }
       else this._state.permanentTasks.push(obj);
       this._save(); this._closeModal(); this._renderPermSection();
