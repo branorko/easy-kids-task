@@ -58,6 +58,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data[DOMAIN] = {"store": store, "data": data}
     hass.http.register_view(UlohyDataView(hass))
 
+    version = await hass.async_add_executor_job(_read_version)
+
     js_path = os.path.join(os.path.dirname(__file__), "www", "ulohy-card.js")
     if os.path.isfile(js_path):
         try:
@@ -67,7 +69,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             ])
         except (ImportError, AttributeError):
             hass.http.register_static_path(LOVELACE_RESOURCE_URL, js_path, cache_headers=False)
-        add_extra_js_url(hass, LOVELACE_RESOURCE_URL)
+        # Rovnaké URL (s verziou) ako v Lovelace resources → prehliadač načíta modul len raz
+        # a po každej aktualizácii si musí stiahnuť novú verziu (žiadna stará kópia z cache).
+        add_extra_js_url(hass, f"{LOVELACE_RESOURCE_URL}?v={version}")
 
     async def _register_when_ready(event=None):
         await _async_register_lovelace_resource(hass)
@@ -78,7 +82,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     else:
         hass.bus.async_listen_once("homeassistant_started", _register_when_ready)
 
-    _LOGGER.info("[ulohy] v%s načítaná", await hass.async_add_executor_job(_read_version))
+    _LOGGER.info("[ulohy] v%s načítaná", version)
     return True
 
 
